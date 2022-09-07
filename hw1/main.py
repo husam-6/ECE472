@@ -103,11 +103,10 @@ class Model(tf.Module):
         # NOTE: Not sure if we need different dimensions for w and mu/sigma
 
     def __call__(self, x):
-        gaussians = np.zeros(shape=(x.shape[0], 1))
-        for j in range(self.num_features):
-            gaussians += self.w[j] * tf.math.exp(-((x - self.mus[j])**2 / (self.sigmas[j] ** 2)))
-        gaussians += self.b
-        return tf.squeeze(gaussians)
+        gaussians = tf.transpose(self.w) *  \
+                    tf.math.exp(-((x - tf.transpose(self.mus))**2 \
+                    / (tf.transpose(self.sigmas) ** 2)))
+        return tf.squeeze(tf.reduce_sum(gaussians, 1) + self.b)
 
     @property
     def model(self):
