@@ -97,15 +97,15 @@ class Model(tf.Module):
         self.num_basis = num_basis
         self.b = tf.Variable(tf.zeros(shape=[1, 1]), name="bias")
         self.w = tf.Variable(rng.normal(shape=[self.num_basis, 1]), name="weights")
-        self.mus = tf.Variable(tf.cast(tf.linspace(LOWER_VAL, UPPER_VAL, self.num_basis), tf.float32), name="means")
-        self.sigmas = tf.Variable(tf.ones(shape=[self.num_basis, 1]), name="sigmas") * 0.3
+        self.mus = tf.Variable(rng.normal(shape=[self.num_basis, 1]), name="means")
+        self.sigmas = tf.Variable(rng.normal(shape=[self.num_basis, 1]), name="sigmas")
 
         # NOTE: Not sure if we need different dimensions for w and mu/sigma
 
     def __call__(self, x):
         gaussians = tf.transpose(self.w) *  \
-                    tf.math.exp(-((x - tf.transpose(self.mus))**2 \
-                    / (tf.transpose(self.sigmas) ** 2)))
+                    tf.math.exp(-((x - tf.transpose(self.mus))**2 / \
+                    (tf.transpose(self.sigmas) ** 2)))
         return tf.squeeze(tf.reduce_sum(gaussians, 1) + self.b)
 
     @property
@@ -117,7 +117,10 @@ class Model(tf.Module):
 
 
 def main(a):
-    logging.basicConfig()
+    logging.basicConfig(
+        format='%(asctime)s.%(msecs)03d %(levelname)s %(module)s - %(funcName)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
 
     if FLAGS.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -144,7 +147,7 @@ def main(a):
     )
 
     model = Model(tf_rng, FLAGS.num_basis)
-    logging.debug(model.model)
+    logging.info(model.model)
 
     optimizer = tf.optimizers.SGD(learning_rate=FLAGS.learning_rate)
 
@@ -164,10 +167,10 @@ def main(a):
     logging.debug(model.model)
 
     # print out true values versus estimates
-    print("w,    w_hat")
-    compare_linear_models(data.model, model.model)
+    # print("w,    w_hat")
+    # compare_linear_models(data.model, model.model)
 
-    logging.info(f"Mus: {model.mus}")
+    logging.info(model.model)
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
     ax[0].set_title("Sinewave Regression")
@@ -176,7 +179,7 @@ def main(a):
     h.set_rotation(0)
 
     # Plot sampled points with gaussian noise and estimated sinewave
-    xs = np.linspace(np.amin(model.mus) * 1.5, np.amax(model.mus)*1.5, 1000)
+    xs = np.linspace(np.amin(model.mus) * 3, np.amax(model.mus)*1.5, 1000)
     xs = xs[:, np.newaxis]
     yhat = model(xs)
     ax[0].plot(xs, np.squeeze(yhat), "--", color="skyblue")
@@ -190,7 +193,7 @@ def main(a):
 
     ax[1].set_title("Basis Functions")
     ax[1].set_xlabel("x")
-    ax[1].set_xlim(np.amin(model.mus) * 1.5, np.amax(model.mus) * 1.5)
+    ax[1].set_xlim(np.amin(model.mus) * 3, np.amax(model.mus) * 1.3)
     h = ax[1].set_ylabel("y", labelpad=10)
     h.set_rotation(0)
 
