@@ -76,6 +76,8 @@ class Data:
 
         return self.x[choices], self.y[choices], self.true[choices]
 
+# TensorFlow Example documentation used: 
+# https://www.tensorflow.org/guide/core/mlp_core#multilayer_perceptron_mlp_overview
 def xavier_init(input_dim, output_dim, rng):
     """Initializes weight vector given in/out dimensions
     
@@ -106,7 +108,7 @@ class layer(tf.Module):
             self.b = tf.Variable(tf.zeros(shape=(self.out_dim, )))
             self.built = True
         
-        # Compute the forward pass
+        # Compute the forward pass, apply the layer to the data
         z = x @ self.w + self.b
         return self.activation(z)
 
