@@ -1,6 +1,14 @@
 """
 Homework assignment 2 - Husam Almanakly
 
+Picking a function f was difficult because our model required our output to be between
+0-1. So I couldn't just use any activation function for each layer (we can for the
+hidden and input layers, but ultimately at the output we need to have a scaled number between
+0-1). 
+
+To get around this I just used a sigmoid activation in the last layer / output layer, since
+a sigmoid = 1 / (1 + exp(x)). 
+
 """
 
 import os
