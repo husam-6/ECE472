@@ -7,7 +7,11 @@ hidden and input layers, but ultimately at the output we need to have a scaled n
 0-1). 
 
 To get around this I just used a sigmoid activation in the last layer / output layer, since
-a sigmoid = 1 / (1 + exp(x)). 
+a sigmoid = 1 / (1 + exp(x)).
+
+It's also worth noting we aren't exactly defining the function - our Network is really learning
+the function f using a bunch of weights and our SGD process to approximate it! That's sort of
+the point of a neural network
 
 """
 
@@ -211,26 +215,21 @@ def main():
 
 
     # Plot data
-    num_points = 104
+    num_points = 100
     axis = np.linspace(-15, 15, num_points)
     xx, yy = np.meshgrid(axis, axis)
     
     # Reshape for easier work with Model
     coords = np.vstack([xx.ravel(), yy.ravel()]).T
-    output = np.zeros(coords.shape[0])    
-    bar2 = trange(0, coords.shape[0], batch_size)
-    for i in bar2:
-        y = model(coords[i:i + batch_size], tf_rng)
-        output[i:i + batch_size] = tf.squeeze(y)
-        bar2.set_description(f"Batch {i // batch_size}")
-        bar2.refresh()
+    y = model(coords, tf_rng)
+    output = tf.squeeze(y)
     
     # Plot real samples and predicted boundary curve at p(x) = 0.5
     plt.figure()
     plt.plot(data.x[:num_samples], data.y[:num_samples], "o", color="red")
     plt.plot(data.x[num_samples:], data.y[num_samples:], "o", color="blue")
     plt.legend(["Data 0", "Data 1"])
-    plt.contourf(xx, yy, output.reshape(num_points, num_points), [0, 0.5, 1], colors=["lightcoral", "steelblue"])
+    plt.contourf(xx, yy, output.numpy().reshape(num_points, num_points), [0, 0.5, 1], colors=["lightcoral", "steelblue"])
     plt.title("Spiral Data")
     
     plt.tight_layout()
