@@ -25,18 +25,9 @@ script_path = os.path.dirname(os.path.realpath(__file__))
 UPPER_VAL = 1
 LOWER_VAL = 0
 
-@dataclass
-class LinearModel:
-    weights: np.ndarray
-    bias: float
-    
-    # Adding guassian elements
-    mus: np.ndarray
-    sigmas: np.ndarray
 
 @dataclass
 class Data:
-    model: LinearModel
     rng: InitVar[np.random.Generator]
     num_basis: int
     num_samples: int
@@ -61,13 +52,6 @@ class Data:
         choices = rng.choice(self.index, size=batch_size)
 
         return self.x[choices], self.y[choices].flatten()
-
-
-def compare_linear_models(a: LinearModel, b: LinearModel):
-    for w_a, w_b in zip(a.weights, b.weights):
-        print(f"{w_a:0.2f}, {w_b:0.2f}")
-
-    print(f"{a.bias:0.2f}, {b.bias:0.2f}")
 
 
 font = {
@@ -108,13 +92,6 @@ class Model(tf.Module):
                     (tf.transpose(self.sigmas) ** 2)))
         return tf.squeeze(tf.reduce_sum(gaussians, 1) + self.b)
 
-    @property
-    def model(self):
-        return LinearModel(
-            self.w.numpy().reshape([self.num_basis]), self.b.numpy().squeeze(),
-            self.mus.numpy().reshape([self.num_basis]), self.sigmas.numpy().reshape([self.num_basis])
-        )
-
 
 def main(a):
     logging.basicConfig(
@@ -131,15 +108,7 @@ def main(a):
     np_rng = np.random.default_rng(np_seed)
     tf_rng = tf.random.Generator.from_seed(tf_seed.entropy)
 
-    data_generating_model = LinearModel(
-        weights=np_rng.integers(low=0, high=5, size=(FLAGS.num_basis)), bias=2,
-        mus=np_rng.integers(low=0, high=1, size=(FLAGS.num_basis)),
-        sigmas=np_rng.integers(low=0, high=1, size=(FLAGS.num_basis))
-    )
-    logging.debug(data_generating_model)
-
     data = Data(
-        data_generating_model,
         np_rng,
         FLAGS.num_basis,
         FLAGS.num_samples,
@@ -147,7 +116,6 @@ def main(a):
     )
 
     model = Model(tf_rng, FLAGS.num_basis)
-    logging.info(model.model)
 
     optimizer = tf.optimizers.SGD(learning_rate=FLAGS.learning_rate)
 
@@ -164,13 +132,6 @@ def main(a):
         bar.set_description(f"Loss @ {i} => {loss.numpy():0.6f}")
         bar.refresh()
 
-    logging.debug(model.model)
-
-    # print out true values versus estimates
-    # print("w,    w_hat")
-    # compare_linear_models(data.model, model.model)
-
-    logging.info(model.model)
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
     ax[0].set_title("Sinewave Regression")
@@ -182,14 +143,15 @@ def main(a):
     xs = np.linspace(np.amin(model.mus) * 3, np.amax(model.mus)*1.5, 1000)
     xs = xs[:, np.newaxis]
     yhat = model(xs)
-    ax[0].plot(xs, np.squeeze(yhat), "--", color="skyblue")
-    ax[0].plot(np.squeeze(data.x), data.y, "o", color="pink")
+    ax[0].plot(xs, np.squeeze(yhat), "--", color="purple", linewidth=1.5, zorder=2)
+    ax[0].plot(np.squeeze(data.x), data.y, "o", color="pink", zorder=1)
     ax[0].set_ylim(np.amin(data.y) * 1.5, np.amax(data.y) * 1.5)
     ax[0].set_xlim(LOWER_VAL, UPPER_VAL)
 
     # Plot true sinewave
     true_y = np.sin(2*np.pi*xs)
-    ax[0].plot(xs, true_y, color="teal")
+    ax[0].plot(xs, true_y, color="teal", zorder=0)
+    ax[0].legend(["Estimated", "Data", "True"])
 
     ax[1].set_title("Basis Functions")
     ax[1].set_xlabel("x")

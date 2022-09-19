@@ -9,6 +9,10 @@ hidden and input layers, but ultimately at the output we need to have a scaled n
 To get around this I just used a sigmoid activation in the last layer / output layer, since
 a sigmoid = 1 / (1 + exp(x)).
 
+I played around with leaky_relu, elu, gelu, and tanh and eventually once my code was working, 
+stuck with 2 layers being relu (output being a sigmoid as well as mentioned). I had some trouble
+when I used all sigmoids because the gradient would saturate (small derivative)
+
 It's also worth noting we aren't exactly defining the function - our Network is really learning
 the function f using a bunch of weights and our SGD process to approximate it! That's sort of
 the point of a neural network
@@ -42,19 +46,10 @@ parser.add_argument("--random_seed", default=31415, help="Random seed")
 parser.add_argument("--sigma_noise", default=0.5, help="Standard deviation of noise random variable")
 parser.add_argument("--debug", default=False, help="Set logging level to debug")
 
-# Set up model and data classes
-@dataclass
-class SpiralModel:
-    theta: np.ndarray
-    x: np.ndarray
-    y: np.ndarray
-    true: np.ndarray
-
 
 @dataclass
 class Data:
     """Data class for spiral generated data"""
-    model: SpiralModel
     rng: InitVar[np.random.Generator]
     num_samples: int
     sigma: float
@@ -87,6 +82,7 @@ class Data:
         choices = rng.choice(self.index, size=batch_size)
 
         return self.x[choices], self.y[choices], self.true[choices]
+
 
 # TensorFlow Example documentation used: 
 # https://www.tensorflow.org/guide/core/mlp_core#multilayer_perceptron_mlp_overview
@@ -124,10 +120,11 @@ class layer(tf.Module):
         z = x @ self.w + self.b
         return self.activation(z)
 
+
 class Model(tf.Module):
     def __init__(self, layers):
         """
-        A regression model to estimate a sinewave using Gaussians, weights, and a bias term
+        Model for a Multi Layer Perceptron to classify spiral dataset
 
         Also obtained from TensorFlow documentation
         """
@@ -170,16 +167,7 @@ def main():
     num_samples = int(args.num_samples)
     batch_size = int(args.batch_size)
 
-    data_generating_model = SpiralModel(
-        theta=np_rng.integers(low= THETA_LOW, high= THETA_HIGH, size=(num_samples, 1)),
-        x=np_rng.integers(low=0, high=10, size=(num_samples, 1)),
-        y=np_rng.integers(low=0, high=10, size=(num_samples, 1)),
-        true=np_rng.integers(low=0, high=1, size=(num_samples, 1)),
-    )
-    logging.debug(data_generating_model)
-
     data = Data(
-        data_generating_model,
         np_rng,
         num_samples,
         float(args.sigma_noise),

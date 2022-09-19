@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow.keras import layers, models
 import argparse
 from tqdm import trange
 from dataclasses import dataclass, field, InitVar
@@ -92,6 +93,35 @@ class Data:
         return self.validation[choices], self.validation_labels[choices]
 
 
+# https://www.tensorflow.org/tutorials/images/cnn
+def create_model():
+    """Creates keras model of a CNN
+
+    Code obtained from TensorFlow Docs example linked above
+    """
+
+    model = models.Sequential()
+
+    # CNN Layers
+    model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    
+    # Add Dense Layer for classification
+    model.add(layers.Flatten())
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(10, activity_regularizer=tf.keras.regularizers.L2(0.01)))
+
+    model.compile(optimizer="adam",
+                  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                  metrics=['accuracy']
+    )
+    return model
+
+
+
 def main():
     """Main function for script execution"""
     
@@ -126,17 +156,32 @@ def main():
     
     data = Data(train, validation, test)
     
-    logging.info(data.train.shape)
-    
-    
-    # vals = train.values.reshape(-1, 28, 28, 1)
-    
+    # logging.info(data.train.shape)
     # logging.info(labels)
-    # sample = vals[-1, :, :, :]
+    # sample = data.train[-1, :, :, :]
     # pixels = sample.reshape((28, 28))
     # plt.imshow(pixels, cmap="gray")
     
+    # Fit model for a CNN 
+    model = create_model()
+    model.summary()
+    fitted = model.fit(data.train, data.train_labels, epochs=10,
+                       validation_data=(data.validation, data.validation_labels)
+    )
     
+    # Test model
+    plt.figure()
+    plt.plot(fitted.history["loss"], label="Training Loss")
+    plt.plot(fitted.history["val_loss"], label="Validation Loss")
+    plt.title("Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+
+    # Test on test set 
+    test_results = model.evaluate(data.test, data.test_labels, verbose=2)
+    logging.info(f"Test set loss: {test_results[0]}")
+    logging.info(f"Test set accuracy: {test_results[1]}")
 
     plt.savefig(f"{script_path}/mnist_classify.pdf")
 
