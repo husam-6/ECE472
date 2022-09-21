@@ -87,8 +87,12 @@ def create_model():
     # Add Dense Layer for classification
     model.add(layers.Flatten())
     model.add(layers.Dense(64, activation='relu'))
+
+    # Add drop out
     model.add(layers.Dropout(0.5))
-    model.add(layers.Dense(10, activity_regularizer=tf.keras.regularizers.L2(0.01)))
+    
+    # L2 Regularization for last layer
+    model.add(layers.Dense(10, activity_regularizer=tf.keras.regularizers.L2(0.001)))
 
     model.compile(optimizer="adam",
                   loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -108,7 +112,7 @@ def main():
         format='%(asctime)s - %(levelname)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         level=logging.INFO,
-        filename='hw3/output.log'
+        filename='hw3/output.txt'
     )
     
     logging.getLogger().setLevel(logging.INFO)
@@ -129,18 +133,19 @@ def main():
     model = create_model()
     model.summary(print_fn=logging.info)
 
-    # Tune hyperparamters based on validation set
-    validation_fitted = model.fit(data.validation, data.validation_labels, epochs=5)
-    logging.info(f"Validation Accuracy: {validation_fitted.history['accuracy'][-1]}")
-
-    # Fit model based on training set now
+    # Fit model based on training set
     model = create_model()
-    fitted = model.fit(data.train, data.train_labels, epochs=10)
+    fitted = model.fit(
+        data.train, data.train_labels, epochs=5,
+        validation_data=(data.validation, data.validation_labels)
+    )
     
     # Test model
     plt.figure()
     plt.plot(fitted.history["loss"], label="Training Loss")
-    plt.title("Training Data Loss")
+    plt.plot(fitted.history["val_loss"], label="Validation Loss")
+    plt.legend()
+    plt.title("Loss vs Epoch")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
 
