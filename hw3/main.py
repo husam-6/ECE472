@@ -18,16 +18,10 @@ from dataclasses import dataclass, field, InitVar
 script_path = os.path.dirname(os.path.realpath(__file__))
 matplotlib.style.use("classic")
 
-TRAIN_SAMPLES = 50000
 
 # Command line flags
 parser = argparse.ArgumentParser()
-parser.add_argument("--num_samples", default=100, help="Number of samples in dataset")
-parser.add_argument("--batch_size", default=16, help="Number of samples in batch")
-parser.add_argument("--num_iters", default=300, help="Number of SGD iterations")
-parser.add_argument("--learning_rate", default=0.1, help="Learning rate / step size for SGD")
 parser.add_argument("--random_seed", default=31415, help="Random seed")
-parser.add_argument("--sigma_noise", default=0.5, help="Standard deviation of noise random variable")
 parser.add_argument("--debug", default=False, help="Set logging level to debug")
 
 
@@ -73,31 +67,12 @@ class Data:
         self.validation = self.test_initial.drop("label", axis=1).values.reshape(-1, 28, 28, 1)
 
 
-    def get_training_batch(self, rng, batch_size):
-        """
-        Select random subset of examples for training batch
-        """
-        index = np.arange(self.train.shape[0])
-        choices = rng.choice(index, size=batch_size)
-
-        return self.train[choices], self.train_labels[choices]
-
-
-    def get_validation_batch(self, rng, batch_size):
-        """
-        Select random subset of examples for validation batch
-        """
-        index = np.arange(self.validation.shape[0])
-        choices = rng.choice(index, size=batch_size)
-
-        return self.validation[choices], self.validation_labels[choices]
-
-
-# https://www.tensorflow.org/tutorials/images/cnn
 def create_model():
     """Creates keras model of a CNN
 
-    Code obtained from TensorFlow Docs example linked above
+    Code obtained from TensorFlow Docs example linked below
+    
+    https://www.tensorflow.org/tutorials/images/cnn
     """
 
     model = models.Sequential()
@@ -112,6 +87,7 @@ def create_model():
     # Add Dense Layer for classification
     model.add(layers.Flatten())
     model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dropout(0.5))
     model.add(layers.Dense(10, activity_regularizer=tf.keras.regularizers.L2(0.01)))
 
     model.compile(optimizer="adam",
@@ -131,24 +107,17 @@ def main():
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
-        level=logging.INFO
+        level=logging.INFO,
+        filename='hw3/output.log'
     )
     
     logging.getLogger().setLevel(logging.INFO)
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Generate data
-    seed_sequence = np.random.SeedSequence(args.random_seed)
-    np_seed, tf_seed = seed_sequence.spawn(2)
-    np_rng = np.random.default_rng(np_seed)
-    tf_rng = tf.random.Generator.from_seed(tf_seed.entropy)
-
-    num_samples = int(args.num_samples)
-    batch_size = int(args.batch_size)
-
     # Process data - read in as csv using pandas, convert to numpy array
     # with proper dimensions
+    logging.info("Processing data...")
     df = pd.read_csv(f"{script_path}/mnist_train.csv")
     test = pd.read_csv(f"{script_path}/mnist_test.csv")
     validation = df.iloc[50000:]
@@ -156,27 +125,24 @@ def main():
     
     data = Data(train, validation, test)
     
-    # logging.info(data.train.shape)
-    # logging.info(labels)
-    # sample = data.train[-1, :, :, :]
-    # pixels = sample.reshape((28, 28))
-    # plt.imshow(pixels, cmap="gray")
-    
     # Fit model for a CNN 
     model = create_model()
-    model.summary()
-    fitted = model.fit(data.train, data.train_labels, epochs=10,
-                       validation_data=(data.validation, data.validation_labels)
-    )
+    model.summary(print_fn=logging.info)
+
+    # Tune hyperparamters based on validation set
+    validation_fitted = model.fit(data.validation, data.validation_labels, epochs=5)
+    logging.info(f"Validation Accuracy: {validation_fitted.history['accuracy'][-1]}")
+
+    # Fit model based on training set now
+    model = create_model()
+    fitted = model.fit(data.train, data.train_labels, epochs=10)
     
     # Test model
     plt.figure()
     plt.plot(fitted.history["loss"], label="Training Loss")
-    plt.plot(fitted.history["val_loss"], label="Validation Loss")
-    plt.title("Loss")
+    plt.title("Training Data Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.legend()
 
     # Test on test set 
     test_results = model.evaluate(data.test, data.test_labels, verbose=2)
