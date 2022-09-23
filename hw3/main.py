@@ -22,6 +22,7 @@ matplotlib.style.use("classic")
 # Command line flags
 parser = argparse.ArgumentParser()
 parser.add_argument("--random_seed", default=31415, help="Random seed")
+parser.add_argument("--epochs", default=31415, help="Number of Epochs")
 parser.add_argument("--debug", default=False, help="Set logging level to debug")
 
 
@@ -78,15 +79,15 @@ def create_model():
     model = models.Sequential()
 
     # CNN Layers
-    model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)))
+    model.add(layers.Conv2D(15, (3, 3), activation='relu', input_shape=(28, 28, 1)))
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.Conv2D(15, (3, 3), activation='relu'))
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.Conv2D(15, (3, 3), activation='relu'))
     
     # Add Dense Layer for classification
     model.add(layers.Flatten())
-    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(15, activation='relu'))
 
     # Add drop out
     model.add(layers.Dropout(0.5))
@@ -107,6 +108,8 @@ def main():
     
     # Set up logger and arguments
     args = parser.parse_args()
+
+    EPOCHS = int(args.epochs)
 
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s: %(message)s',
@@ -136,18 +139,22 @@ def main():
     # Fit model based on training set
     model = create_model()
     fitted = model.fit(
-        data.train, data.train_labels, epochs=5,
+        data.train, data.train_labels, epochs=EPOCHS,
         validation_data=(data.validation, data.validation_labels)
     )
     
     # Test model
     plt.figure()
-    plt.plot(fitted.history["loss"], label="Training Loss")
-    plt.plot(fitted.history["val_loss"], label="Validation Loss")
-    plt.legend()
-    plt.title("Loss vs Epoch")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
+    fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
+    ax[0].plot(fitted.history["accuracy"], label="Training")
+    ax[0].plot(fitted.history["val_accuracy"], label="Validation")
+    ax[0].legend(loc="lower right")
+    ax[0].set_title("Accuracy vs Epoch")
+    ax[0].set_xlabel("Epoch")
+    ax[0].set_ylabel("Accuracy")
+
+    ax[1].imshow(data.train[-1, :, :,:])
+    ax[1].set_title("Sample Data Image")
 
     # Test on test set 
     test_results = model.evaluate(data.test, data.test_labels, verbose=2)
