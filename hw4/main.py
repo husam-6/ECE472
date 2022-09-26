@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import tensorflow_addons as tfa
 from tensorflow.keras import layers, models
 import argparse
 from tqdm import trange
@@ -26,6 +27,8 @@ matplotlib.style.use("classic")
 parser = argparse.ArgumentParser()
 parser.add_argument("--random_seed", default=31415, help="Random seed")
 parser.add_argument("--epochs", default=5, help="Number of Epochs")
+parser.add_argument("--batch_size", default=32, help="Batch size for SGD")
+parser.add_argument("--groups", default=32, help="Number of Groups in GroupNorm")
 parser.add_argument("--debug", default=False, help="Set logging level to debug")
 
 # Image dimensions
@@ -88,25 +91,25 @@ class Data:
         self.cf100_label_names = [y.decode("ascii") for y in cf100_label_names]
         
         # CIFAR10 Training Data - use last 10,000 samples as validation set
-        self.cf10_train = cf10[:40000, :, :, :]
-        self.cf10_val = cf10[40000:, :, :, :]
+        self.cf10_train = cf10[:40000, :, :, :] / 255
+        self.cf10_val = cf10[40000:, :, :, :] / 255
 
         self.cf10_train_labels = cf10_labels[:40000]
         self.cf10_val_labels = cf10_labels[40000:]
 
-        self.cf10_test = rgb_stack(cf10_test["data"])
-        self.cf10_test_labels = cf10_test["labels"]
+        self.cf10_test = rgb_stack(cf10_test["data"]) / 255
+        self.cf10_test_labels = np.array(cf10_test["labels"])
 
         # CIFAR100 data
         cf100_data = cf100["data"]
-        self.cf100_train = rgb_stack(cf100_data)[:40000, :, :, :]
-        self.cf100_val = rgb_stack(cf100_data)[40000:, :, :, :]
+        self.cf100_train = rgb_stack(cf100_data)[:40000, :, :, :] / 255
+        self.cf100_val = rgb_stack(cf100_data)[40000:, :, :, :] / 255
         
         self.cf100_train_labels = cf100['fine_labels'][:40000]
         self.cf100_val_labels = cf100['fine_labels'][40000:]
         
-        self.cf100_test = rgb_stack(cf100_test["data"])
-        self.cf100_test_labels = cf100_test["fine_labels"]
+        self.cf100_test = rgb_stack(cf100_test["data"]) / 255
+        self.cf100_test_labels = np.array(cf100_test["fine_labels"])
 
 
 def unpack_cf10_data() -> Tuple[np.ndarray]:
@@ -154,7 +157,7 @@ def unpickle(file):
     return {y.decode('ascii'): dict.get(y) for y in dict.keys()}
 
 
-def create_model():
+def create_model(classes):
     """Creates keras model of a CNN
 
     Code obtained from TensorFlow Docs example linked below
@@ -165,21 +168,24 @@ def create_model():
     model = models.Sequential()
 
     # CNN Layers
-    model.add(layers.Conv2D(15, (3, 3), activation='relu', input_shape=(H, W, C)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(H, W, C)))
+    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(15, (3, 3), activation='relu'))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(15, (3, 3), activation='relu'))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
     
     # Add Dense Layer for classification
     model.add(layers.Flatten())
-    model.add(layers.Dense(15, activation='relu'))
+    model.add(layers.Dense(1024, activation='relu'))
 
     # Add drop out
     model.add(layers.Dropout(0.5))
     
     # L2 Regularization for last layer
-    model.add(layers.Dense(10, activity_regularizer=tf.keras.regularizers.L2(0.001)))
+    model.add(layers.Dense(classes, activity_regularizer=tf.keras.regularizers.L2(0.001)))
 
     model.compile(optimizer="adam",
                   loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -196,6 +202,8 @@ def main():
     args = parser.parse_args()
 
     EPOCHS = int(args.epochs)
+    GROUPS = int(args.groups)
+    BATCHES = int(args.batch_size)
 
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s: %(message)s',
@@ -211,6 +219,19 @@ def main():
     # Process data
     logging.info("Reading in pickled data...")
     data = Data()
+
+    # Apply CNN Model
+    model = create_model(10)
+    fitted = model.fit(
+        data.cf10_train, data.cf10_train_labels, epochs=EPOCHS,
+        validation_data=(data.cf10_val, data.cf10_val_labels),
+        batch_size=BATCHES
+    )
+
+    # Test set
+    cf10_test_results = model.evaluate(data.cf10_test, data.cf10_test_labels, verbose=2)
+    logging.info(f"Test set loss: {cf10_test_results[0]}")
+    logging.info(f"Test set accuracy: {cf10_test_results[1]}")
 
     # Plot image as example
     plt.figure()
