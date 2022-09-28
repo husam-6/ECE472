@@ -28,7 +28,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--random_seed", default=31415, help="Random seed")
 parser.add_argument("--epochs", default=5, help="Number of Epochs")
 parser.add_argument("--batch_size", default=32, help="Batch size for SGD")
-parser.add_argument("--groups", default=32, help="Number of Groups in GroupNorm")
 parser.add_argument("--debug", default=False, help="Set logging level to debug")
 
 # Image dimensions
@@ -94,7 +93,7 @@ class Data:
         self.cf10_train = cf10[:40000, :, :, :] / 255
         self.cf10_val = cf10[40000:, :, :, :] / 255
 
-        self.cf10_train_labels = cf10_labels[:40000]
+        self.cf10_train_labels = np.array(cf10_labels[:40000])
         self.cf10_val_labels = cf10_labels[40000:]
 
         self.cf10_test = rgb_stack(cf10_test["data"]) / 255
@@ -157,7 +156,7 @@ def unpickle(file):
     return {y.decode('ascii'): dict.get(y) for y in dict.keys()}
 
 
-def create_model(classes):
+def create_model(classes, topk):
     """Creates keras model of a CNN
 
     Code obtained from TensorFlow Docs example linked below
@@ -168,16 +167,31 @@ def create_model(classes):
     model = models.Sequential()
 
     # CNN Layers
-    model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(H, W, C)))
-    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
+    # Group Conv with BatchNorm - pass through MaxPooling to reduce params
+    model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same', input_shape=(H, W, C)))
+    # model.add(tfa.layers.GroupNormalization(groups = 32))
+    # model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same'))
+    model.add(tfa.layers.GroupNormalization(groups = 128))
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
-    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
-    model.add(layers.BatchNormalization(epsilon=1e-06, momentum=0.9))
     
-    # Add Dense Layer for classification
+    model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
+    # model.add(tfa.layers.GroupNormalization(groups = 64))
+    # model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
+    model.add(tfa.layers.GroupNormalization(groups = 64))
+    model.add(layers.MaxPooling2D((2, 2)))
+    
+    model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
+    # model.add(tfa.layers.GroupNormalization(groups = 64))
+    # model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
+    model.add(tfa.layers.GroupNormalization(groups = 64))
+    model.add(layers.MaxPooling2D((2, 2)))
+
+    model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same'))
+    # model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same'))
+    model.add(tfa.layers.GroupNormalization(groups = 32))
+    model.add(layers.MaxPooling2D((2, 2)))
+    
+    # Add Hidden Layer 
     model.add(layers.Flatten())
     model.add(layers.Dense(1024, activation='relu'))
 
@@ -185,14 +199,20 @@ def create_model(classes):
     model.add(layers.Dropout(0.5))
     
     # L2 Regularization for last layer
-    model.add(layers.Dense(classes, activity_regularizer=tf.keras.regularizers.L2(0.001)))
+    model.add(layers.Dense(classes, activation='softmax', activity_regularizer=tf.keras.regularizers.L2(0.01)))
 
+    if topk != 1:
+        # Default top k accuracy is k = 5
+        metrics = ['accuracy', 'top_k_categorical_accuracy']
+    else:
+        metrics = ['accuracy']
+    
     model.compile(optimizer="adam",
-                  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                  metrics=['accuracy']
+                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                metrics=metrics
     )
+    model.summary(print_fn=logging.info)
     return model
-
 
 
 def main():
@@ -202,16 +222,22 @@ def main():
     args = parser.parse_args()
 
     EPOCHS = int(args.epochs)
-    GROUPS = int(args.groups)
     BATCHES = int(args.batch_size)
 
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         level=logging.INFO,
-    )
+        filename='./hw4/output.txt',
+        filemode='w'
+	)
+	
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+    console.setFormatter(formatter)
+    logging.getLogger().addHandler(console) 
     
-    logging.getLogger().setLevel(logging.INFO)
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
@@ -221,7 +247,7 @@ def main():
     data = Data()
 
     # Apply CNN Model
-    model = create_model(10)
+    model = create_model(10, 1)
     fitted = model.fit(
         data.cf10_train, data.cf10_train_labels, epochs=EPOCHS,
         validation_data=(data.cf10_val, data.cf10_val_labels),
@@ -246,6 +272,16 @@ def main():
     ax[1].set_title(f"CIFAR100: {label2}")
 
     plt.savefig(f"{script_path}/cifar.pdf")
+
+    plt.figure()
+    plt.plot(fitted.history["loss"], label = "Training")
+    plt.plot(fitted.history["val_loss"], label = "Validation")
+    plt.legend()
+    plt.title("Loss vs Epochs")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+
+    plt.savefig(f"{script_path}/cifar10_loss.pdf")
 
 
 if __name__ == "__main__":
