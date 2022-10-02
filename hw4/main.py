@@ -22,7 +22,6 @@ import pickle
 script_path = os.path.dirname(os.path.realpath(__file__))
 matplotlib.style.use("classic")
 
-
 # Command line flags
 parser = argparse.ArgumentParser()
 parser.add_argument("--random_seed", default=31415, help="Random seed")
@@ -34,7 +33,6 @@ parser.add_argument("--debug", default=False, help="Set logging level to debug")
 H = 32
 W = 32
 C = 3
-
 
 @dataclass
 class Data:
@@ -93,11 +91,11 @@ class Data:
         self.cf10_train = cf10[:40000, :, :, :] / 255
         self.cf10_val = cf10[40000:, :, :, :] / 255
 
-        self.cf10_train_labels = np.array(cf10_labels[:40000])
-        self.cf10_val_labels = cf10_labels[40000:]
+        self.cf10_train_labels = one_hot(np.array(cf10_labels[:40000]), 10)
+        self.cf10_val_labels = one_hot(cf10_labels[40000:], 10)
 
         self.cf10_test = rgb_stack(cf10_test["data"]) / 255
-        self.cf10_test_labels = np.array(cf10_test["labels"])
+        self.cf10_test_labels = one_hot(np.array(cf10_test["labels"]), 10)
 
         # CIFAR100 data
         cf100_data = cf100["data"]
@@ -109,6 +107,27 @@ class Data:
         
         self.cf100_test = rgb_stack(cf100_test["data"]) / 255
         self.cf100_test_labels = np.array(cf100_test["fine_labels"])
+    
+    
+    def augment_training_data(self, cifar=10, batch_size=32):
+        """Function to augment (shuffle and rotate) the training data
+
+        Obtained from https://www.geeksforgeeks.org/cifar-10-image-classification-in-tensorflow/
+        """
+
+        x_train = self.cf10_train
+        y_train = self.cf10_train_labels
+        if cifar == 100:
+            x_train = self.cf100_train
+            y_train = self.cf100_train_labels
+
+        data = tf.keras.preprocessing.image.ImageDataGenerator(
+                width_shift_range=0.1, height_shift_range=0.1, horizontal_flip=True)
+
+        training = data.flow(x_train, y_train, batch_size)
+        steps_per_epoch = x_train.shape[0] // batch_size
+        
+        return training, steps_per_epoch
 
 
 def unpack_cf10_data() -> Tuple[np.ndarray]:
@@ -145,6 +164,18 @@ def rgb_stack(im: np.ndarray) -> np.ndarray:
     return np.stack([im_r, im_g, im_b], axis=-1)
 
 
+def one_hot(labels, k):
+    """Convert label to one hot vector encodings to use label smoothing
+    """
+    output = np.zeros((labels.shape[0], k))
+    for i, label in enumerate(labels):
+        tmp = np.zeros(k)
+        tmp[label] = 1
+        output[i, :] = tmp
+
+    return output
+
+
 def unpickle(file):
     """Function to read in CIFAR data
     
@@ -156,50 +187,63 @@ def unpickle(file):
     return {y.decode('ascii'): dict.get(y) for y in dict.keys()}
 
 
+def relu_bn(inputs):
+    """Helper function for model
+    """
+    relu = layers.ReLU()(inputs)
+    bn = layers.BatchNormalization()(relu)
+    return bn
+
+
+def res_block(x, units, downsample=False):
+    conv1 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=(1 if not downsample else 2),
+                            padding="same")(x)
+    conv1 = relu_bn(conv1)
+    conv2 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=1, padding="same")(conv1)
+    
+    if downsample:
+        x = layers.Conv2D(filters=units, kernel_size=1, strides=2, padding="same")(x)
+
+    output = layers.Add()([x, conv2])
+    output = relu_bn(output)
+    
+    return output
+
+
 def create_model(classes, topk):
     """Creates keras model of a CNN
 
-    Code obtained from TensorFlow Docs example linked below
-    
-    https://www.tensorflow.org/tutorials/images/cnn
+    Model loosely based off of example in 
+
+    https://towardsdatascience.com/building-a-resnet-in-keras-e8f1322a49ba
     """
 
-    model = models.Sequential()
+    inp = layers.Input(shape=(H, W, C))
+    
+    units = 64
+    norm = layers.BatchNormalization()(inp)
+    norm = layers.Conv2D(units, (3,3), padding="same")(norm) 
+    
+    # Start of first block
+    block = relu_bn(norm)
 
-    # CNN Layers
-    # Group Conv with BatchNorm - pass through MaxPooling to reduce params
-    model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same', input_shape=(H, W, C)))
-    # model.add(tfa.layers.GroupNormalization(groups = 32))
-    # model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same'))
-    model.add(tfa.layers.GroupNormalization(groups = 128))
-    model.add(layers.MaxPooling2D((2, 2)))
-    
-    model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
-    # model.add(tfa.layers.GroupNormalization(groups = 64))
-    # model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
-    model.add(tfa.layers.GroupNormalization(groups = 64))
-    model.add(layers.MaxPooling2D((2, 2)))
-    
-    model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
-    # model.add(tfa.layers.GroupNormalization(groups = 64))
-    # model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
-    model.add(tfa.layers.GroupNormalization(groups = 64))
-    model.add(layers.MaxPooling2D((2, 2)))
+    # Architecture of ResNet (2 blocks, then 5 blocks, then 2 blocks with the same num of units)
+    blocks = [2, 5, 2]
+    for i in range(len(blocks)):
+        num_blocks = blocks[i]
+        for j in range(num_blocks):
+            block = res_block(block, units, downsample=(j == 0 and i != 0)) #Downsample every start of the next 'unit' of blocks
+        units *= 2
 
-    model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same'))
-    # model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same'))
-    model.add(tfa.layers.GroupNormalization(groups = 32))
-    model.add(layers.MaxPooling2D((2, 2)))
-    
-    # Add Hidden Layer 
-    model.add(layers.Flatten())
-    model.add(layers.Dense(1024, activation='relu'))
+    block = layers.AveragePooling2D((2,2), padding="same")(block)
+    tmp = layers.Flatten()(block)
 
     # Add drop out
-    model.add(layers.Dropout(0.5))
+    tmp = layers.Dropout(0.2)(tmp)
     
     # L2 Regularization for last layer
-    model.add(layers.Dense(classes, activation='softmax', activity_regularizer=tf.keras.regularizers.L2(0.01)))
+    output = layers.Dense(classes, activation='softmax', activity_regularizer=tf.keras.regularizers.L2(0.001))(tmp)
+    model = models.Model(inp, output)
 
     if topk != 1:
         # Default top k accuracy is k = 5
@@ -208,7 +252,7 @@ def create_model(classes, topk):
         metrics = ['accuracy']
     
     model.compile(optimizer="adam",
-                loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.2),
                 metrics=metrics
     )
     model.summary(print_fn=logging.info)
@@ -254,6 +298,18 @@ def main():
         batch_size=BATCHES
     )
 
+    cf10_test_results = model.evaluate(data.cf10_test, data.cf10_test_labels, verbose=2)
+    logging.info("On initial run of training set...")
+    logging.info(f"Test set loss: {cf10_test_results[0]}")
+    logging.info(f"Test set accuracy: {cf10_test_results[1]}")
+    
+    logging.info("Augmenting data and running training again")
+    train_generator, steps = data.augment_training_data(10, BATCHES)
+    
+    fitted_second = model.fit(train_generator, validation_data=(data.cf10_val, data.cf10_val_labels),
+            steps_per_epoch=steps, epochs=EPOCHS
+    )
+
     # Test set
     cf10_test_results = model.evaluate(data.cf10_test, data.cf10_test_labels, verbose=2)
     logging.info(f"Test set loss: {cf10_test_results[0]}")
@@ -262,8 +318,12 @@ def main():
     # Plot image as example
     plt.figure()
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
-    label = data.cf10_label_names[data.cf10_train_labels[0]]
-    label2 = data.cf100_label_names[data.cf100_train_labels[0]]
+    
+    #logging.info(data.cf10_train_labels[0])
+    #logging.info(np.flatnonzero(data.cf10_train_labels[0]))
+    
+    label = data.cf10_label_names[np.flatnonzero(data.cf10_train_labels[0])[0]]
+    label2 = data.cf100_label_names[np.flatnonzero(data.cf100_train_labels[0])[0]]
     
     ax[0].imshow(data.cf10_train[0, :, :, :])
     ax[0].set_title(f"CIFAR10: {label}")
@@ -273,9 +333,12 @@ def main():
 
     plt.savefig(f"{script_path}/cifar.pdf")
 
+    loss = np.concatenate([fitted.history["loss"], fitted_second.history["loss"]])
+    val_loss = np.concatenate([fitted.history["val_loss"], fitted_second.history["val_loss"]])
+
     plt.figure()
-    plt.plot(fitted.history["loss"], label = "Training")
-    plt.plot(fitted.history["val_loss"], label = "Validation")
+    plt.plot(loss, label = "Training")
+    plt.plot(val_loss, label = "Validation")
     plt.legend()
     plt.title("Loss vs Epochs")
     plt.xlabel("Epochs")
