@@ -102,11 +102,11 @@ class Data:
         self.cf100_train = rgb_stack(cf100_data)[:40000, :, :, :] / 255
         self.cf100_val = rgb_stack(cf100_data)[40000:, :, :, :] / 255
         
-        self.cf100_train_labels = cf100['fine_labels'][:40000]
-        self.cf100_val_labels = cf100['fine_labels'][40000:]
+        self.cf100_train_labels = one_hot(np.array(cf100['fine_labels'][:40000]), 100)
+        self.cf100_val_labels = one_hot(np.array(cf100['fine_labels'][40000:]), 100)
         
         self.cf100_test = rgb_stack(cf100_test["data"]) / 255
-        self.cf100_test_labels = np.array(cf100_test["fine_labels"])
+        self.cf100_test_labels = one_hot(np.array(cf100_test["fine_labels"]), 100)
     
     
     def augment_training_data(self, cifar=10, batch_size=32):
@@ -190,22 +190,24 @@ def unpickle(file):
 def relu_bn(inputs):
     """Helper function for model
     """
-    relu = layers.ReLU()(inputs)
-    bn = layers.BatchNormalization()(relu)
-    return bn
+    bn = layers.BatchNormalization()(inputs)
+    relu = layers.ReLU()(bn)
+    return relu
 
 
 def res_block(x, units, downsample=False):
     conv1 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=(1 if not downsample else 2),
                             padding="same")(x)
     conv1 = relu_bn(conv1)
-    conv2 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=1, padding="same")(conv1)
     
+    conv2 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=1, padding="same")(conv1)
+    conv2 = layers.BatchNormalization()(conv2)
+
     if downsample:
         x = layers.Conv2D(filters=units, kernel_size=1, strides=2, padding="same")(x)
 
     output = layers.Add()([x, conv2])
-    output = relu_bn(output)
+    output = layers.ReLU()(output)
     
     return output
 
@@ -220,14 +222,14 @@ def create_model(classes, topk):
 
     inp = layers.Input(shape=(H, W, C))
     
-    units = 64
+    units = 128
     norm = layers.BatchNormalization()(inp)
     norm = layers.Conv2D(units, (3,3), padding="same")(norm) 
     
     # Start of first block
     block = relu_bn(norm)
 
-    # Architecture of ResNet (2 blocks, then 5 blocks, then 2 blocks with the same num of units)
+    # Architecture of network
     blocks = [2, 5, 2]
     for i in range(len(blocks)):
         num_blocks = blocks[i]
@@ -238,9 +240,12 @@ def create_model(classes, topk):
     block = layers.AveragePooling2D((2,2), padding="same")(block)
     tmp = layers.Flatten()(block)
 
-    # Add drop out
-    tmp = layers.Dropout(0.2)(tmp)
+    # Hidden layer
+    tmp = layers.Dense(1024, activation = "relu")(tmp)
     
+    # Add drop out
+    tmp = layers.Dropout(0.1)(tmp)
+
     # L2 Regularization for last layer
     output = layers.Dense(classes, activation='softmax', activity_regularizer=tf.keras.regularizers.L2(0.001))(tmp)
     model = models.Model(inp, output)
@@ -290,30 +295,65 @@ def main():
     logging.info("Reading in pickled data...")
     data = Data()
 
-    # Apply CNN Model
+    
+    def fit_model(model, train_data, train_labels, validation_data, validation_labels, test_data, test_labels, label):
+        
+        fitted = model.fit(
+            train_data, train_labels, epochs=EPOCHS,
+            validation_data=(validation_data, validation_labels), 
+            batch_size=BATCHES
+        )
+
+        test_results = model.evaluate(test_data, test_labels, verbose=2)
+        val_acc = test_results[1]
+        if label == 100:
+            val_acc = test_results[2]
+        logging.info("On initial run of training set...")
+        logging.info(f"Test set loss: {test_results[0]}")
+        logging.info(f"Test set accuracy: {val_acc}")
+    
+        logging.info("Augmenting data and running training again")
+        
+        train_generator, steps = data.augment_training_data(label, BATCHES)
+    
+        fitted_second = model.fit(train_generator, validation_data=(validation_data, validation_labels),
+                steps_per_epoch=steps, epochs=EPOCHS
+        )
+
+        # Test set
+        test_results = model.evaluate(test_data, test_labels, verbose=2)
+        logging.info(f"Test set loss: {test_results[0]}")
+        logging.info(f"Test set accuracy: {test_results[1]}")
+
+        loss = np.concatenate([fitted.history["loss"], fitted_second.history["loss"]])
+        val_loss = np.concatenate([fitted.history["val_loss"], fitted_second.history["val_loss"]])
+
+        plt.figure()
+        plt.plot(loss, label = "Training")
+        plt.plot(val_loss, label = "Validation")
+        plt.legend()
+        plt.title("Loss vs Epochs")
+        plt.xlabel("Epochs")
+        plt.ylabel("Loss")
+
+        plt.savefig(f"{script_path}/cifar-{label}-loss.pdf")
+    
+    
+    # Apply ResNet Model
+    logging.info("Training model for CIFAR10 Dataset:")
     model = create_model(10, 1)
-    fitted = model.fit(
-        data.cf10_train, data.cf10_train_labels, epochs=EPOCHS,
-        validation_data=(data.cf10_val, data.cf10_val_labels),
-        batch_size=BATCHES
-    )
-
-    cf10_test_results = model.evaluate(data.cf10_test, data.cf10_test_labels, verbose=2)
-    logging.info("On initial run of training set...")
-    logging.info(f"Test set loss: {cf10_test_results[0]}")
-    logging.info(f"Test set accuracy: {cf10_test_results[1]}")
+    fit_model(model, data.cf10_train, data.cf10_train_labels, 
+              data.cf10_val, data.cf10_val_labels, data.cf10_test,
+              data.cf10_test_labels, 10
+    ) 
     
-    logging.info("Augmenting data and running training again")
-    train_generator, steps = data.augment_training_data(10, BATCHES)
     
-    fitted_second = model.fit(train_generator, validation_data=(data.cf10_val, data.cf10_val_labels),
-            steps_per_epoch=steps, epochs=EPOCHS
-    )
-
-    # Test set
-    cf10_test_results = model.evaluate(data.cf10_test, data.cf10_test_labels, verbose=2)
-    logging.info(f"Test set loss: {cf10_test_results[0]}")
-    logging.info(f"Test set accuracy: {cf10_test_results[1]}")
+    # logging.info("Training model for CIFAR100 Dataset: using top-5 accuracy")
+    # model = create_model(100, 5)
+    # fit_model(model, data.cf100_train, data.cf100_train_labels, 
+    #           data.cf100_val, data.cf100_val_labels, data.cf100_test,
+    #           data.cf100_test_labels, 100
+    # )
 
     # Plot image as example
     plt.figure()
@@ -333,18 +373,6 @@ def main():
 
     plt.savefig(f"{script_path}/cifar.pdf")
 
-    loss = np.concatenate([fitted.history["loss"], fitted_second.history["loss"]])
-    val_loss = np.concatenate([fitted.history["val_loss"], fitted_second.history["val_loss"]])
-
-    plt.figure()
-    plt.plot(loss, label = "Training")
-    plt.plot(val_loss, label = "Validation")
-    plt.legend()
-    plt.title("Loss vs Epochs")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-
-    plt.savefig(f"{script_path}/cifar10_loss.pdf")
 
 
 if __name__ == "__main__":
