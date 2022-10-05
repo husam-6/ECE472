@@ -3,7 +3,6 @@ Homework assignment 4 - Husam Almanakly
 
 """
 
-from ctypes.wintypes import HACCEL
 import os
 import logging
 import matplotlib
@@ -163,6 +162,11 @@ def relu_bn(inputs):
 
 
 def res_block(x, units, downsample=False):
+    """Function with convolutional layers with residual connections
+
+    Also obtained from https://www.cs.toronto.edu/~kriz/cifar.html
+    """
+    x = relu_bn(x) # Pre activation
     conv1 = layers.Conv2D(filters=units, kernel_size=(3,3), strides=(1 if not downsample else 2),
                             padding="same")(x)
     conv1 = relu_bn(conv1)
@@ -277,32 +281,57 @@ def main():
     
     def fit_model(model, data, label):
         
+        # Obtained from 
+        # https://www.tensorflow.org/api_docs/python/tf/keras/callbacks/ModelCheckpoint
+
+        checkpoint_filepath = f'{script_path}/hw4/tmp/checkpoint'
+        model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=checkpoint_filepath,
+            save_weights_only=True,
+            monitor="val_loss",
+            mode='min',
+            save_best_only=True
+        )
+
         fitted = model.fit(
             data.train, data.train_labels, epochs=EPOCHS,
             validation_data=(data.val, data.val_labels), 
-            batch_size=BATCHES
+            batch_size=BATCHES, callbacks=[model_checkpoint_callback]
         )
+        
+        model.load_weights(checkpoint_filepath)
 
         test_results = model.evaluate(data.test, data.test_labels, verbose=2)
         val_acc = test_results[1]
         if label == 100:
             val_acc = test_results[2]
+        
         logging.info("On initial run of training set...")
         logging.info(f"Test set loss: {test_results[0]}")
-        logging.info(f"Test set accuracy: {val_acc}")
-    
+        
+        statement = "Test set accuracy"
+        if label == 100:
+            statement = "Test set best of 5 accuracy: "
+        
+        logging.info(f"{statement}: {val_acc}")
         logging.info("Augmenting data and running training again")
         
         train_generator, steps = data.augment_training_data(BATCHES)
     
         fitted_second = model.fit(train_generator, validation_data=(data.val, data.val_labels),
-                steps_per_epoch=steps, epochs=EPOCHS
+                steps_per_epoch=steps, epochs=EPOCHS, callbacks=[model_checkpoint_callback]
         )
-
+        
+        model.load_weights(checkpoint_filepath)
+        
         # Test set
-        test_results = model.evaluate(data.test, data.test_labels, verbose=2)
+        test_results = model.evaluate(data.test, data.test_labels, verbose=2) 
+        val_acc = test_results[1]
+        if label == 100:
+            val_acc = test_results[2]
+
         logging.info(f"Test set loss: {test_results[0]}")
-        logging.info(f"Test set accuracy: {test_results[1]}")
+        logging.info(f"{statement}: {val_acc}")
 
         loss = np.concatenate([fitted.history["loss"], fitted_second.history["loss"]])
         val_loss = np.concatenate([fitted.history["val_loss"], fitted_second.history["val_loss"]])
@@ -330,9 +359,9 @@ def main():
     # Plot image as example
     plt.figure()
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
-        
-    label = cifar10.label_names[np.flatnonzero(cifar10.train_labels[0])[0]]
-    label2 = cifar10.label_names[np.flatnonzero(cifar100.train_labels[0])[0]]
+    
+    label = cifar10.label_names[np.flatnonzero(cifar10.train_labels[0, :])[0]]
+    label2 = cifar100.label_names[np.flatnonzero(cifar100.train_labels[0, :])[0]]
     
     ax[0].imshow(cifar10.train[0, :, :, :])
     ax[0].set_title(f"CIFAR10: {label}")
