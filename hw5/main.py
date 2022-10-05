@@ -14,8 +14,8 @@ import argparse
 from dataclasses import dataclass, field, InitVar
 from typing import Tuple
 import tensorflow as tf
-from transformers import DistilBertTokenizer
-from transformers import TFDistilBertModel
+from transformers import DistilBertTokenizer, DistilBertConfig
+from transformers import TFDistilBertForSequenceClassification
 
 MODEL_NAME = 'distilbert-base-uncased'
 script_path = os.path.dirname(os.path.realpath(__file__))
@@ -109,10 +109,13 @@ def fine_tune(data, batch_size, epochs):
 
     # Encoded dataset
     train_dataset = tf.data.Dataset.from_tensor_slices((dict(train_encodings), list(data.train_labels)))
+    val_dataset = tf.data.Dataset.from_tensor_slices((dict(val_encodings), list(data.val_labels)))
     test_dataset = tf.data.Dataset.from_tensor_slices((dict(test_encodings), list(data.test_labels)))
 
     # Compile model
-    model = TFDistilBertModel.from_pretrained(MODEL_NAME)
+    config = DistilBertConfig(dropout=0.2, attention_dropout=0.2)
+    config.output_hidden_states = False
+    model = TFDistilBertForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=5)
     model.compile(optimizer="adam",
                 loss=tf.keras.losses.SparseCategoricalCrossentropy(),
                 metrics=['accuracy']
@@ -122,14 +125,12 @@ def fine_tune(data, batch_size, epochs):
 
     # Train - 'Fine Tuning' of pre-trained Distilibert dataset
     model.fit(train_dataset.shuffle(data.train.shape[0]).batch(batch_size),
-              epochs=epochs, batch_size=batch_size, validation_data=(val_encodings, list(data.val_labels)))
+              epochs=epochs, batch_size=batch_size, validation_data=val_dataset.shuffle(1000).batch(batch_size))
 
     # Evaluate on test set
     evaluation = model.evaluate(test_dataset.shuffle(data.test.shape[0]).batch(batch_size),
                                 batch_size=batch_size, verbose=2, return_dict=True)
     return evaluation
-
-    
 
 
 def main():
