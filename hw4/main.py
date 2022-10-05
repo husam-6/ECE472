@@ -359,9 +359,9 @@ def main():
     # Plot image as example
     plt.figure()
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
-    
-    label = cifar10.label_names[np.flatnonzero(cifar10.train_labels[0, :])[0]]
-    label2 = cifar100.label_names[np.flatnonzero(cifar100.train_labels[0, :])[0]]
+        
+    label = cifar10.label_names[np.flatnonzero(cifar10.train_labels[0])[0]]
+    label2 = cifar100.label_names[np.flatnonzero(cifar100.train_labels[0])[0]]
     
     ax[0].imshow(cifar10.train[0, :, :, :])
     ax[0].set_title(f"CIFAR10: {label}")
