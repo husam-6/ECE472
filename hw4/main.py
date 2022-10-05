@@ -40,30 +40,23 @@ class Data:
     
     https://www.cs.toronto.edu/~kriz/cifar.html
     """
-   
+    train_init: np.ndarray 
+    test_init: np.ndarray  
+    labels_init: np.ndarray 
+    label_names: list 
+    classes: int
+
     # Training data
-    cf10_train: np.ndarray = field(init=False)
-    cf10_train_labels: np.ndarray = field(init=False)
-    
-    cf100_train: np.ndarray = field(init=False)
-    cf100_train_labels: np.ndarray = field(init=False)
+    train: np.ndarray = field(init=False)
+    train_labels: np.ndarray = field(init=False)
     
     # Validation Set
-    cf10_val: np.ndarray = field(init=False)
-    cf10_val_labels: np.ndarray = field(init=False)
+    val: np.ndarray = field(init=False)
+    val_labels: np.ndarray = field(init=False)
     
-    cf100_val: np.ndarray = field(init=False)
-    cf100_val_labels: np.ndarray = field(init=False)
-
     # Test data
-    cf10_test: np.ndarray = field(init=False)
-    cf10_test_labels: np.ndarray = field(init=False)
-    
-    cf100_test: np.ndarray = field(init=False)
-    cf100_test_labels: np.ndarray = field(init=False)
-
-    cf10_label_names: list = field(init=False)
-    cf100_label_names: list = field(init=False)
+    test: np.ndarray = field(init=False)
+    test_labels: np.ndarray = field(init=False)
 
 
     def __post_init__(self):
@@ -73,59 +66,33 @@ class Data:
         H x W is the dimensions of the image
         C is the color channel (ie RGB => C = 3)
         """
-
-        # Read in pickled data
-        cf10, cf10_labels = unpack_cf10_data()
-        cf100 = unpickle(f"{script_path}/cifar-100-python/train")
-        cf10_test = unpickle(f"{script_path}/cifar-10-batches-py/test_batch")
-        cf100_test = unpickle(f"{script_path}/cifar-100-python/test")
-        
-        # Label names
-        cf10_label_names = unpickle(f"{script_path}/cifar-10-batches-py/batches.meta")["label_names"]
-        cf100_label_names = unpickle(f"{script_path}/cifar-100-python/meta")["fine_label_names"]
-        
-        self.cf10_label_names = [y.decode("ascii") for y in cf10_label_names]
-        self.cf100_label_names = [y.decode("ascii") for y in cf100_label_names]
         
         # CIFAR10 Training Data - use last 10,000 samples as validation set
-        self.cf10_train = cf10[:40000, :, :, :] / 255
-        self.cf10_val = cf10[40000:, :, :, :] / 255
+        self.train = self.train_init[:40000, :, :, :] / 255
+        self.val = self.train_init[40000:, :, :, :] / 255
 
-        self.cf10_train_labels = one_hot(np.array(cf10_labels[:40000]), 10)
-        self.cf10_val_labels = one_hot(cf10_labels[40000:], 10)
+        self.train_labels = one_hot(np.array(self.labels_init[:40000]), self.classes)
+        self.val_labels = one_hot(np.array(self.labels_init[40000:]), self.classes)
 
-        self.cf10_test = rgb_stack(cf10_test["data"]) / 255
-        self.cf10_test_labels = one_hot(np.array(cf10_test["labels"]), 10)
+        self.test = rgb_stack(self.test_init["data"]) / 255
 
-        # CIFAR100 data
-        cf100_data = cf100["data"]
-        self.cf100_train = rgb_stack(cf100_data)[:40000, :, :, :] / 255
-        self.cf100_val = rgb_stack(cf100_data)[40000:, :, :, :] / 255
-        
-        self.cf100_train_labels = one_hot(np.array(cf100['fine_labels'][:40000]), 100)
-        self.cf100_val_labels = one_hot(np.array(cf100['fine_labels'][40000:]), 100)
-        
-        self.cf100_test = rgb_stack(cf100_test["data"]) / 255
-        self.cf100_test_labels = one_hot(np.array(cf100_test["fine_labels"]), 100)
+        key = "labels"
+        if self.classes == 100:
+            key = "fine_labels"
+        self.test_labels = one_hot(np.array(self.test_init[key]), self.classes)
     
     
-    def augment_training_data(self, cifar=10, batch_size=32):
+    def augment_training_data(self, batch_size=32):
         """Function to augment (shuffle and rotate) the training data
 
         Obtained from https://www.geeksforgeeks.org/cifar-10-image-classification-in-tensorflow/
         """
 
-        x_train = self.cf10_train
-        y_train = self.cf10_train_labels
-        if cifar == 100:
-            x_train = self.cf100_train
-            y_train = self.cf100_train_labels
-
         data = tf.keras.preprocessing.image.ImageDataGenerator(
                 width_shift_range=0.1, height_shift_range=0.1, horizontal_flip=True)
 
-        training = data.flow(x_train, y_train, batch_size)
-        steps_per_epoch = x_train.shape[0] // batch_size
+        training = data.flow(self.train, self.train_labels, batch_size)
+        steps_per_epoch = self.train.shape[0] // batch_size
         
         return training, steps_per_epoch
 
@@ -293,18 +260,30 @@ def main():
 
     # Process data
     logging.info("Reading in pickled data...")
-    data = Data()
+    cf10, cf10_labels = unpack_cf10_data()
+    cf100 = unpickle(f"{script_path}/cifar-100-python/train")
+    cf100_data = rgb_stack(cf100["data"])
+    cf10_test = unpickle(f"{script_path}/cifar-10-batches-py/test_batch")
+    cf100_test = unpickle(f"{script_path}/cifar-100-python/test")
+    
+    # Label names
+    cf10_label_names = unpickle(f"{script_path}/cifar-10-batches-py/batches.meta")["label_names"]
+    cf100_label_names = unpickle(f"{script_path}/cifar-100-python/meta")["fine_label_names"]
+    
+    # Data objects for each dataset
+    cifar10 = Data(cf10, cf10_test, cf10_labels, cf10_label_names, 10)
+    cifar100 = Data(rgb_stack(cf100["data"]), cf100_test, cf100["fine_labels"], cf100_label_names, 100)
 
     
-    def fit_model(model, train_data, train_labels, validation_data, validation_labels, test_data, test_labels, label):
+    def fit_model(model, data, label):
         
         fitted = model.fit(
-            train_data, train_labels, epochs=EPOCHS,
-            validation_data=(validation_data, validation_labels), 
+            data.train, data.train_labels, epochs=EPOCHS,
+            validation_data=(data.val, data.val_labels), 
             batch_size=BATCHES
         )
 
-        test_results = model.evaluate(test_data, test_labels, verbose=2)
+        test_results = model.evaluate(data.test, data.test_labels, verbose=2)
         val_acc = test_results[1]
         if label == 100:
             val_acc = test_results[2]
@@ -314,14 +293,14 @@ def main():
     
         logging.info("Augmenting data and running training again")
         
-        train_generator, steps = data.augment_training_data(label, BATCHES)
+        train_generator, steps = data.augment_training_data(BATCHES)
     
-        fitted_second = model.fit(train_generator, validation_data=(validation_data, validation_labels),
+        fitted_second = model.fit(train_generator, validation_data=(data.val, data.val_labels),
                 steps_per_epoch=steps, epochs=EPOCHS
         )
 
         # Test set
-        test_results = model.evaluate(test_data, test_labels, verbose=2)
+        test_results = model.evaluate(data.test, data.test_labels, verbose=2)
         logging.info(f"Test set loss: {test_results[0]}")
         logging.info(f"Test set accuracy: {test_results[1]}")
 
@@ -342,33 +321,23 @@ def main():
     # Apply ResNet Model
     logging.info("Training model for CIFAR10 Dataset:")
     model = create_model(10, 1)
-    fit_model(model, data.cf10_train, data.cf10_train_labels, 
-              data.cf10_val, data.cf10_val_labels, data.cf10_test,
-              data.cf10_test_labels, 10
-    ) 
-    
-    
-    # logging.info("Training model for CIFAR100 Dataset: using top-5 accuracy")
-    # model = create_model(100, 5)
-    # fit_model(model, data.cf100_train, data.cf100_train_labels, 
-    #           data.cf100_val, data.cf100_val_labels, data.cf100_test,
-    #           data.cf100_test_labels, 100
-    # )
+    fit_model(model, cifar10, 10) 
+        
+    logging.info("Training model for CIFAR100 Dataset: using top-5 accuracy")
+    model = create_model(100, 5)
+    fit_model(model, cifar100, 100)
 
     # Plot image as example
     plt.figure()
     fig, ax = plt.subplots(1, 2, figsize=(10, 3), dpi=200)
+        
+    label = cifar10.label_names[np.flatnonzero(cifar10.train_labels[0])[0]]
+    label2 = cifar10.label_names[np.flatnonzero(cifar100.train_labels[0])[0]]
     
-    #logging.info(data.cf10_train_labels[0])
-    #logging.info(np.flatnonzero(data.cf10_train_labels[0]))
-    
-    label = data.cf10_label_names[np.flatnonzero(data.cf10_train_labels[0])[0]]
-    label2 = data.cf100_label_names[np.flatnonzero(data.cf100_train_labels[0])[0]]
-    
-    ax[0].imshow(data.cf10_train[0, :, :, :])
+    ax[0].imshow(cifar10.train[0, :, :, :])
     ax[0].set_title(f"CIFAR10: {label}")
 
-    ax[1].imshow(data.cf100_train[0, :, :,:])
+    ax[1].imshow(cifar100.train[0, :, :,:])
     ax[1].set_title(f"CIFAR100: {label2}")
 
     plt.savefig(f"{script_path}/cifar.pdf")
