@@ -3,7 +3,7 @@ Homework assignment 5 - Husam Almanakly
 
 """
 
-# Libraries
+# %% Libraries
 import os
 import logging
 import matplotlib
@@ -15,7 +15,8 @@ from dataclasses import dataclass, field, InitVar
 from typing import Tuple
 import tensorflow as tf
 from transformers import DistilBertTokenizer, DistilBertConfig
-from transformers import TFDistilBertForSequenceClassification
+from tqdm import tqdm
+from transformers import TFDistilBertModel
 
 MODEL_NAME = 'distilbert-base-uncased'
 script_path = os.path.dirname(os.path.realpath(__file__))
@@ -93,43 +94,69 @@ def process_ag_csv(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fine_tune(data, batch_size, epochs):
+def tokenize(sentences, tokenizer, maxlen):
+    """Tokenize input data
+    
+    https://www.kaggle.com/code/atechnohazard/news-classification-using-huggingface-distilbert
+    """
+    input_ids, input_masks, input_segments = [],[],[]
+    for sentence in tqdm(sentences):
+        inputs = tokenizer.encode_plus(sentence, add_special_tokens=True, max_length=maxlen, pad_to_max_length=True, 
+                                             return_attention_mask=True, return_token_type_ids=True)
+        input_ids.append(inputs['input_ids'])
+        input_masks.append(inputs['attention_mask'])
+        input_segments.append(inputs['token_type_ids'])        
+        
+    return np.asarray(input_ids, dtype='int32'), np.asarray(input_masks, dtype='int32')
+
+
+def fine_tune(data, batch_size, epochs, maxlen):
     """Using distilibert classifier. Code used from:
 
     https://medium.com/geekculture/hugging-face-distilbert-tensorflow-for-custom-text-classification-1ad4a49e26a7
+
+    https://www.kaggle.com/code/atechnohazard/news-classification-using-huggingface-distilbert
     """
 
     # Tokenizer - given sentence, output corresponding token
-    tokenizer = DistilBertTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = DistilBertTokenizer.from_pretrained(MODEL_NAME, do_lower_case=True, 
+                    add_special_tokens=True, max_length=maxlen, pad_to_max_length=True)
     
     # Tokenize input data
-    train_encodings = tokenizer(list(data.train), truncation=True, padding=True)
-    val_encodings = tokenizer(list(data.val), truncation=True, padding=True)
-    test_encodings = tokenizer(list(data.test), truncation=True, padding=True)
+    train_encodings = tokenize(data.train, tokenizer, maxlen)
+    val_encodings = tokenize(data.val, tokenizer, maxlen)
+    test_encodings = tokenize(data.test, tokenizer, maxlen)
 
-    # Encoded dataset
-    train_dataset = tf.data.Dataset.from_tensor_slices((dict(train_encodings), list(data.train_labels)))
-    val_dataset = tf.data.Dataset.from_tensor_slices((dict(val_encodings), list(data.val_labels)))
-    test_dataset = tf.data.Dataset.from_tensor_slices((dict(test_encodings), list(data.test_labels)))
-
-    # Compile model
     config = DistilBertConfig(dropout=0.2, attention_dropout=0.2)
     config.output_hidden_states = False
-    model = TFDistilBertForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=5)
-    model.compile(optimizer="adam",
-                loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-                metrics=['accuracy']
-    )
+    transformer_model = TFDistilBertModel.from_pretrained(MODEL_NAME, config=config)
 
-    model.summary(print_fn=logging.info)
+    input_ids_in = tf.keras.layers.Input(shape=(maxlen,), name='input_token', dtype='int32')
+    input_masks_in = tf.keras.layers.Input(shape=(maxlen,), name='masked_token', dtype='int32') 
 
+    embedding_layer = transformer_model(input_ids_in, attention_mask=input_masks_in)[0]
+    X = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64, return_sequences=True))(embedding_layer)
+    X = tf.keras.layers.GlobalMaxPool1D()(X)
+    X = tf.keras.layers.Dense(64, activation='relu')(X)
+    X = tf.keras.layers.Dropout(0.2)(X)
+    X = tf.keras.layers.Dense(4, activation='sigmoid')(X)
+    model = tf.keras.Model(inputs=[input_ids_in, input_masks_in], outputs = X)
+
+    for layer in model.layers[:3]:
+        layer.trainable = False
+
+    model.summary()
+
+    model.compile(loss='sparse_categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    
     # Train - 'Fine Tuning' of pre-trained Distilibert dataset
-    model.fit(train_dataset.shuffle(data.train.shape[0]).batch(batch_size),
-              epochs=epochs, batch_size=batch_size, validation_data=val_dataset.shuffle(1000).batch(batch_size))
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_encodings, data.train_labels))
+    train_dataset = train_dataset.shuffle(200).batch(32)
+    model.fit(train_dataset, epochs=epochs, batch_size=batch_size, validation_data=(val_encodings, data.val_labels))
 
     # Evaluate on test set
-    evaluation = model.evaluate(test_dataset.shuffle(data.test.shape[0]).batch(batch_size),
-                                batch_size=batch_size, verbose=2, return_dict=True)
+    evaluation = model.evaluate(test_encodings, data.test_labels, batch_size=batch_size, verbose=2, return_dict=True)
+    
     return evaluation
 
 
@@ -165,11 +192,12 @@ def main():
     test = process_ag_csv(test)
 
     data = Data(train, test, ["World", "Sports", "Business", "Sci/Tech"])
+    MAXLEN = (train["data"]).map(lambda x: len(x.split())).max()
 
-    # print(data.train_labels)    
-    evaluation = fine_tune(data, BATCHES, EPOCHS)
+    evaluation = fine_tune(data, BATCHES, EPOCHS, MAXLEN)
+
     logging.info(evaluation)
-    
+
 
 if __name__ == "__main__":
     main()
