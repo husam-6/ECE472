@@ -33,8 +33,7 @@ def dense_model():
     dense = layers.Dense(128)(dense_init)
 
     # 128 Dense Layers (intentional bad model for MNIST)
-    # for i in range(126):
-    for i in range(30):
+    for i in range(126):
         if i == 62:
             dense = layers.Add()([dense_init, dense])
         dense = layers.Dense(128)(dense)
@@ -53,7 +52,9 @@ def plot_bar(idx, i, string, ax, accuracy):
     ax[i].set_title(string)
     ax[i].set_xlabel("Layer")
     ax[i].set_ylabel("Error")
-    ax[i].set_ylim([0, 1])  
+    ax[i].set_ylim([0, 1])
+    ax[i].set_xlim([0, 140])
+
 
 
 def main():
@@ -70,7 +71,7 @@ def main():
     
     # Probe each layer initially after small amount of training (2 Epochs)
     fitted = model.fit(
-        data.train, data.train_labels, epochs=1,
+        data.train, data.train_labels, epochs=2,
         validation_data=(data.validation, data.validation_labels)
     )
 
@@ -78,7 +79,7 @@ def main():
 
     # Probe after longer training (10 Epochs)
     fitted = model.fit(
-        data.train, data.train_labels, epochs=4,
+        data.train, data.train_labels, epochs=8,
         validation_data=(data.validation, data.validation_labels)
     )
     
@@ -86,7 +87,7 @@ def main():
     batch_2000_accuracy = probes.check_probes(data, model, EPOCHS, False)
     
     fig, ax = plt.subplots(1, 2, figsize=(17, 10))
-    idx = np.arange(0, len(batch_2000_accuracy))
+    idx = np.arange(0, len(batch_500_accuracy))
 
     # Plot results
     plot_bar(idx, 0, "Probes After 500 Mini Batches", ax, batch_500_accuracy)
