@@ -25,6 +25,43 @@ from tensorflow.keras.models import Sequential
 from tensorflow_addons.layers import InstanceNormalization
 import gdown
 from zipfile import ZipFile
+from skimage import io, color
+
+# Globals
+# Create a dataset from our folder, and rescale the images to the [0-1] range:
+ds_train = keras.preprocessing.image_dataset_from_directory(
+    "gray_images", label_mode=None, image_size=(64, 64), batch_size=32
+)
+ds_train = ds_train.map(lambda x: x / 255.0)
+
+ds_label = keras.preprocessing.image_dataset_from_directory(
+    "images_images", label_mode=None, image_size=(64, 64), batch_size=32
+)
+ds_label = ds_label.map(lambda x: x / 255.0)
+
+# we use different batch size for different resolution, so larger image size
+# could fit into GPU memory. The keys is image resolution in log2
+batch_sizes = {2: 16, 3: 16, 4: 16, 5: 16, 6: 16, 7: 8, 8: 4, 9: 2, 10: 1}
+# We adjust the train step accordingly
+train_step_ratio = {k: batch_sizes[2] / v for k, v in batch_sizes.items()}
+
+
+def create_dataloader(res):
+    batch_size = batch_sizes[log2(res)]
+    # NOTE: we unbatch the dataset so we can `batch()` it again with the `drop_remainder=True` option
+    # since the model only supports a single batch size
+    dl = ds_train.map(partial(resize_image, res), num_parallel_calls=tf.data.AUTOTUNE).unbatch()
+    dl = dl.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
+    return dl
+
+
+def resize_image(res, image):
+    # only donwsampling, so use nearest neighbor that is faster to run
+    image = tf.image.resize(
+        image, (res, res), method=tf.image.ResizeMethod.NEAREST_NEIGHBOR
+    )
+    image = tf.cast(image, tf.float32) / 127.5 - 1.0
+    return image
 
 
 def log2(x):
@@ -219,7 +256,7 @@ class Generator:
 
     def build_block(self, filter_num, res, input_shape, is_base):
         input_tensor = layers.Input(shape=input_shape, name=f"g_{res}")
-        noise = layers.Input(shape=(res, res, 1), name=f"noise_{res}")
+        # noise = layers.Input(shape=(res, res, 1), name=f"noise_{res}")
         w = layers.Input(shape=512)
         x = input_tensor
 
@@ -227,17 +264,17 @@ class Generator:
             x = layers.UpSampling2D((2, 2))(x)
             x = EqualizedConv(filter_num, 3)(x)
 
-        x = AddNoise()([x, noise])
+        # x = AddNoise()([x, noise])
         x = layers.LeakyReLU(0.2)(x)
         x = InstanceNormalization()(x)
         x = AdaIN()([x, w])
 
         x = EqualizedConv(filter_num, 3)(x)
-        x = AddNoise()([x, noise])
+        # x = AddNoise()([x, noise])
         x = layers.LeakyReLU(0.2)(x)
         x = InstanceNormalization()(x)
         x = AdaIN()([x, w])
-        return keras.Model([input_tensor, w, noise], x, name=f"genblock_{res}x{res}")
+        return keras.Model([input_tensor, w], x, name=f"genblock_{res}x{res}")
 
     def grow(self, res_log2):
         res = 2 ** res_log2
@@ -272,7 +309,7 @@ class Generator:
         )
 
 
-class StVyleGAN(tf.keras.Model):
+class StyleGAN(tf.keras.Model):
     def __init__(self, z_dim=512, target_res=64, start_res=4):
         super(StyleGAN, self).__init__()
         self.z_dim = z_dim
@@ -285,7 +322,6 @@ class StVyleGAN(tf.keras.Model):
         self.alpha = tf.Variable(1.0, dtype=tf.float32, trainable=False, name="alpha")
 
         self.mapping = Mapping(num_stages=self.num_stages)
-        self.d_builder = Discriminator(self.start_res_log2, self.target_res_log2)
         self.g_builder = Generator(self.start_res_log2, self.target_res_log2)
         self.g_input_shape = self.g_builder.input_shape
 
@@ -298,23 +334,23 @@ class StVyleGAN(tf.keras.Model):
         tf.keras.backend.clear_session()
         res_log2 = log2(res)
         self.generator = self.g_builder.grow(res_log2)
-        self.discriminator = self.d_builder.grow(res_log2)
+        # self.discriminator = self.d_builder.grow(res_log2)
         self.current_res_log2 = res_log2
         print(f"\nModel resolution:{res}x{res}")
 
     def compile(
-        self, steps_per_epoch, phase, res, d_optimizer, g_optimizer, *args, **kwargs
+        self, steps_per_epoch, phase, res, g_optimizer, *args, **kwargs
     ):
         self.loss_weights = kwargs.pop("loss_weights", self.loss_weights)
         self.steps_per_epoch = steps_per_epoch
         if res != 2 ** self.current_res_log2:
             self.grow_model(res)
-            self.d_optimizer = d_optimizer
+            # self.d_optimizer = d_optimizer
             self.g_optimizer = g_optimizer
 
         self.train_step_counter.assign(0)
         self.phase = phase
-        self.d_loss_metric = keras.metrics.Mean(name="d_loss")
+        # self.d_loss_metric = keras.metrics.Mean(name="d_loss")
         self.g_loss_metric = keras.metrics.Mean(name="g_loss")
         super(StyleGAN, self).compile(*args, **kwargs)
 
@@ -336,7 +372,7 @@ class StVyleGAN(tf.keras.Model):
         loss = tf.reduce_mean(tf.square(loss - 1))
         return loss
 
-    def train_step(self, real_images):
+    def train_step(self, grayscale, real_images):
 
         self.train_step_counter.assign_add(1)
 
@@ -354,15 +390,19 @@ class StVyleGAN(tf.keras.Model):
         fake_labels = -tf.ones(batch_size)
 
         z = tf.random.normal((batch_size, self.z_dim))
-        const_input = tf.ones(tuple([batch_size] + list(self.g_input_shape)))
+        # const_input = tf.ones(tuple([batch_size] + list(self.g_input_shape)))
         noise = self.generate_noise(batch_size)
 
         # generator
         with tf.GradientTape() as g_tape:
             w = self.mapping(z)
-            fake_images = self.generator([const_input, w, noise, alpha])
-            pred_fake = self.discriminator([fake_images, alpha])
-            g_loss = wasserstein_loss(real_labels, pred_fake)
+            
+            # CONVERT IMAGE TO LAB, GET LUMINENCE FROM INPUT IMAGE AND PUT FOR FAKE IMAGE, CONVERT BACK TO RGB
+            pred_image = self.generator([grayscale, w, noise, alpha])
+            pred_image = use_l_from_input(pred_image, grayscale)
+            g_loss = tf.keras.metrics.mean_squared_error(pred_image, real_images)
+            # pred_fake = self.discriminator([pred_image, alpha])
+            # g_loss = wasserstein_loss(real_labels, pred_fake)
 
             trainable_weights = (
                 self.mapping.trainable_weights + self.generator.trainable_weights
@@ -370,46 +410,11 @@ class StVyleGAN(tf.keras.Model):
             gradients = g_tape.gradient(g_loss, trainable_weights)
             self.g_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
-        # discriminator
-        with tf.GradientTape() as gradient_tape, tf.GradientTape() as total_tape:
-            # forward pass
-            pred_fake = self.discriminator([fake_images, alpha])
-            pred_real = self.discriminator([real_images, alpha])
-
-            epsilon = tf.random.uniform((batch_size, 1, 1, 1))
-            interpolates = epsilon * real_images + (1 - epsilon) * fake_images
-            gradient_tape.watch(interpolates)
-            pred_fake_grad = self.discriminator([interpolates, alpha])
-
-            # calculate losses
-            loss_fake = wasserstein_loss(fake_labels, pred_fake)
-            loss_real = wasserstein_loss(real_labels, pred_real)
-            loss_fake_grad = wasserstein_loss(fake_labels, pred_fake_grad)
-
-            # gradient penalty
-            gradients_fake = gradient_tape.gradient(loss_fake_grad, [interpolates])
-            gradient_penalty = self.loss_weights[
-                "gradient_penalty"
-            ] * self.gradient_loss(gradients_fake)
-
-            # drift loss
-            all_pred = tf.concat([pred_fake, pred_real], axis=0)
-            drift_loss = self.loss_weights["drift"] * tf.reduce_mean(all_pred ** 2)
-
-            d_loss = loss_fake + loss_real + gradient_penalty + drift_loss
-
-            gradients = total_tape.gradient(
-                d_loss, self.discriminator.trainable_weights
-            )
-            self.d_optimizer.apply_gradients(
-                zip(gradients, self.discriminator.trainable_weights)
-            )
-
         # Update metrics
-        self.d_loss_metric.update_state(d_loss)
+        # self.d_loss_metric.update_state(d_loss)
         self.g_loss_metric.update_state(g_loss)
         return {
-            "d_loss": self.d_loss_metric.result(),
+            # "d_loss": self.d_loss_metric.result(),
             "g_loss": self.g_loss_metric.result(),
         }
 
@@ -437,14 +442,67 @@ class StVyleGAN(tf.keras.Model):
         return images
 
 
+def use_l_from_input(pred, luminance):
+    L = 116 * (luminance / 255) ** (1/3) - 16
+    lab = color.rgb2lab(pred)
+    lab[:, :, 0] = L
+    pred = color.lab2rgb(lab)
+    return pred
+
+
+def train(style_gan, start_res=4,target_res=128, steps_per_epoch=5000, display_images=True):
+    opt_cfg = {"learning_rate": 1e-3, "beta_1": 0.0, "beta_2": 0.99, "epsilon": 1e-8}
+
+    val_batch_size = 16
+    val_z = tf.random.normal((val_batch_size, style_gan.z_dim))
+    val_noise = style_gan.generate_noise(val_batch_size)
+
+    start_res_log2 = int(np.log2(start_res))
+    target_res_log2 = int(np.log2(target_res))
+
+    for res_log2 in range(start_res_log2, target_res_log2 + 1):
+        res = 2 ** res_log2
+        for phase in ["TRANSITION", "STABLE"]:
+            if res == start_res and phase == "TRANSITION":
+                continue
+
+            # train_dl = create_dataloader(res)
+            batch_size = batch_sizes[log2(res)]
+            train_dl = ds_train.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
+            label_dl = ds_label.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
+
+            steps = int(train_step_ratio[res_log2] * steps_per_epoch)
+
+            style_gan.compile(
+                g_optimizer=tf.keras.optimizers.Adam(**opt_cfg),
+                loss_weights={"gradient_penalty": 10, "drift": 0.001},
+                steps_per_epoch=steps,
+                res=res,
+                phase=phase,
+                run_eagerly=False,
+            )
+
+            prefix = f"res_{res}x{res}_{style_gan.phase}"
+
+            ckpt_cb = keras.callbacks.ModelCheckpoint(
+                f"checkpoints/stylegan_{res}x{res}.ckpt",
+                save_weights_only=True,
+                verbose=0,
+            )
+            print(phase)
+            style_gan.fit(
+                train_dl, label_dl, epochs=1, batch_size=batch_size, callbacks=[ckpt_cb]
+            )
+
+
 def main():
     START_RES = 8
-    TARGET_RES = 8
+    TARGET_RES = 16
 
     style_gan = StyleGAN(start_res=START_RES, target_res=TARGET_RES)
-    train(start_res=4, target_res=16, steps_per_epoch=1, display_images=False)
+    train(style_gan, start_res=4, target_res=16, steps_per_epoch=1, display_images=False)
 
 
 if __name__ == "__main__":
     print()
-    # main()
+    main()
