@@ -41,20 +41,28 @@ def resize_with_padding(img, expected_size):
 
 
 size = (256, 256, 3)
-def load_image(url):
+def load_image(url, text, i):
     # Connect to url (if possible)
     try:
-        res = requests.get(url)
-    except requests.exceptions.ConnectionError:
-        logging.info(f"Connection refused at url {url}")
+        res = requests.get(url, timeout=0.5)
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as error:
+        logging.info(f"Connection refused at url {url}, {error}")
         return None
+    except requests.exceptions.TooManyRedirects as error:
+        logging.info(f"Too many redirects")
+        return None
+    except requests.exceptions.MissingSchema as error:
+        logging.info(f"Missing schema")
+        return None
+
     if res.status_code != 200:
         logging.info(f"Could not connect to url {url}")
         return None
     
     # Read bytes from url (if possible)
     try:
-        img = Image.open(BytesIO(res.content))
+        img = Image.open(BytesIO(res.content)).convert("RGB")
+        img.save(f"./images/img{i}.jpeg")
     except PIL.UnidentifiedImageError:
         logging.info(f"Could not read bytes from url {url}")
         return None
@@ -68,6 +76,21 @@ def load_image(url):
     if len(img_arr.shape) > 2 and img_arr.shape[2] == 4:
         #slice off the alpha channel
         img_arr = img_arr[:, :, :3]
+    
+    # Get grayscale image 
+    if len(img_arr.shape) > 2:
+        gray = grayscale.rgb2gray(img_arr)
+    else:
+        gray = img_arr
+
+    # Save Grayscale
+    gray = Image.fromarray(gray).convert("RGB")
+    gray.save(f"./gray_images/gray{i}.jpeg")
+    
+    # Save caption
+    with open(f'./captions/caption{i}.txt', 'wb') as f:
+        f.write(text.encode())
+
     return img_arr
 
 
@@ -75,45 +98,46 @@ def main():
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     df = pd.read_parquet("part1.parquet")
-    
-    print(df.shape)
-    images = []
-    grayscale_images = []
-    captions = []
+    restart = 61615 
+    df = df.iloc[restart:]
+
+    # captions = df["TEXT"].to_frame()
+    # urls = df["URL"].to_frame()
+
+    # captions.to_csv("captions.txt", sep=' ', header=False, index=False)
+    #urls.to_csv("urls.txt", sep=' ', header=False, index=False)
+    #print(df.shape)
+    #images = []
+    #grayscale_images = []
+    #captions = []
     
     # Loop through dataset, download images, save grayscale and captions
     for i, row in df.iterrows():
-        if i == 300000:
+        if i == 150_001:
             break
+
         # Download image
-        img = load_image(row["URL"])
+        if row["TEXT"] is None:
+            continue
+        img = load_image(row["URL"], row["TEXT"], i)
         if img is None:
             continue
+    
+        logging.info(f"Downloaded image and caption: {i}")
 
-        # Get grayscale image 
-        if len(img.shape) > 2:
-            gray = grayscale.rgb2gray(img)
-        else:
-            gray = img
-        if i % 100 == 0:
-            logging.info(f"Downloading image: {i}")
-        
-        images.append(img)
-        grayscale_images.append(gray)
-        captions.append(row["TEXT"])
-    # print(df["URL"].iloc[0])
 
-    with open('images.npy', 'wb') as f:
+def save_images(idx, images, grayscale_images, captions):
+    with open(f'images{idx}.npy', 'wb') as f:
         images = np.stack(images)
         np.save(f, images)
         logging.info(f"Images shape: {images.shape}")
     
-    with open('captions.npy', 'wb') as f:
+    with open(f'captions{idx}.npy', 'wb') as f:
         captions = np.array(captions)
         np.save(f, captions)
         logging.info(f"Captions shape: {len(captions)}")
     
-    with open('gray.npy', 'wb') as f:
+    with open(f'gray{idx}.npy', 'wb') as f:
         grayscale_images = np.stack(grayscale_images)
         np.save(f, grayscale_images)
         logging.info(f"Grayscale shape: {grayscale_images.shape}")
