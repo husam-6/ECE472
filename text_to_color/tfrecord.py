@@ -42,17 +42,8 @@ output = model.encoder(
 emb = output.last_hidden_state.detach().numpy().squeeze()
 fixed_emb = emb.mean(axis=0)
 
+
 # %%
-# plt.imshow(color.lab2rgb(labrgb), cmap="gray")
-def _int64_feature(value):
-    """Returns an int64_list from a bool / enum / int / uint."""
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
-
-
-def _float_feature(value):
-  """Returns a float_list from a float / double."""
-  return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
-
 
 def _bytes_feature(value):
   """Returns a bytes_list from a string / byte."""
@@ -64,15 +55,15 @@ def _bytes_feature(value):
 # %% Write to TFRecords file for an image
 
 # Create a dictionary with features that may be relevant.
-def image_example(image_arr):
+def image_example(image_arr, gray_arr, caption_emb):
     image_string = image_arr.tobytes()
-    image_shape = image_arr.shape
+    gray_string = gray_arr.tobytes()
+    emb_string = caption_emb.tobytes()
 
     feature = {
-        'height': _int64_feature(image_shape[0]),
-        'width': _int64_feature(image_shape[1]),
-        'depth': _int64_feature(image_shape[2]),
         'image_raw': _bytes_feature(image_string),
+        'image_gray': _bytes_feature(gray_string),
+        'caption_emb': _bytes_feature(emb_string)
     }
 
     return tf.train.Example(features=tf.train.Features(feature=feature))
@@ -80,7 +71,7 @@ def image_example(image_arr):
 
 record_file = 'images.tfrecords'
 with tf.io.TFRecordWriter(record_file) as writer:
-    tf_example = image_example(labrgb)
+    tf_example = image_example(labrgb, gray, fixed_emb)
     writer.write(tf_example.SerializeToString())
 
 
@@ -90,10 +81,9 @@ raw_image_dataset = tf.data.TFRecordDataset('images.tfrecords')
 
 # Create a dictionary describing the features.
 image_feature_description = {
-    'height': tf.io.FixedLenFeature([], tf.int64),
-    'width': tf.io.FixedLenFeature([], tf.int64),
-    'depth': tf.io.FixedLenFeature([], tf.int64),
     'image_raw': tf.io.FixedLenFeature([], tf.string),
+    'image_gray': tf.io.FixedLenFeature([], tf.string),
+    'caption_emb': tf.io.FixedLenFeature([], tf.string),
 }
 
 def _parse_image_function(example_proto):
@@ -103,8 +93,22 @@ def _parse_image_function(example_proto):
 parsed_image_dataset = raw_image_dataset.map(_parse_image_function)
 for image_features in parsed_image_dataset:
     image_raw = image_features["image_raw"].numpy()
+    gray_raw = image_features["image_gray"].numpy()
+    caption = image_features["caption_emb"].numpy()
 
 
-# image_raw == labrgb.tobytes()
+caption = np.frombuffer(caption, dtype=np.float32)
+
 image = np.frombuffer(image_raw, dtype=np.float64)
 image = np.resize(image, (256, 256, 3))
+
+gray_i = np.frombuffer(gray_raw, dtype=np.float64)
+gray_i = np.resize(gray, (256, 256))
+
+plt.imshow(image, cmap="gray")
+plt.figure()
+plt.imshow(gray_i, cmap="gray")
+
+assert (gray_i == gray).all()
+assert (image == labrgb).all()
+assert (caption == fixed_emb).all()
