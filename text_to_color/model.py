@@ -1,43 +1,28 @@
-"""
+# %% Libraries
 
-Husam Almanakly and Michael Bentivegna 
-
-Deep Learning final project. This file implements a StyleGAN-like architecture
-for the purpose of colorizing images based on text captions. 
-
-Reference: https://keras.io/examples/generative/stylegan/
-
-"""
-
-# Libraries
 import os
 import random
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+
 from enum import Enum
 from glob import glob
 from functools import partial
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.models import Sequential
 from tensorflow_addons.layers import InstanceNormalization
+
 import gdown
 from zipfile import ZipFile
-from skimage import io, color
 
-# Globals
-# Create a dataset from our folder, and rescale the images to the [0-1] range:
-ds_train = keras.preprocessing.image_dataset_from_directory(
-    "gray_images", label_mode=None, image_size=(64, 64), batch_size=32
-)
-ds_train = ds_train.map(lambda x: x / 255.0)
 
-ds_label = keras.preprocessing.image_dataset_from_directory(
-    "images_images", label_mode=None, image_size=(64, 64), batch_size=32
-)
-ds_label = ds_label.map(lambda x: x / 255.0)
+def log2(x):
+    return int(np.log2(x))
+
 
 # we use different batch size for different resolution, so larger image size
 # could fit into GPU memory. The keys is image resolution in log2
@@ -45,14 +30,15 @@ batch_sizes = {2: 16, 3: 16, 4: 16, 5: 16, 6: 16, 7: 8, 8: 4, 9: 2, 10: 1}
 # We adjust the train step accordingly
 train_step_ratio = {k: batch_sizes[2] / v for k, v in batch_sizes.items()}
 
+with ZipFile("celeba_gan/data.zip", "r") as zipobj:
+    zipobj.extractall("celeba_gan")
 
-def create_dataloader(res):
-    batch_size = batch_sizes[log2(res)]
-    # NOTE: we unbatch the dataset so we can `batch()` it again with the `drop_remainder=True` option
-    # since the model only supports a single batch size
-    dl = ds_train.map(partial(resize_image, res), num_parallel_calls=tf.data.AUTOTUNE).unbatch()
-    dl = dl.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
-    return dl
+# Create a dataset from our folder, and rescale the images to the [0-1] range:
+
+ds_train = keras.preprocessing.image_dataset_from_directory(
+    "celeba_gan", label_mode=None, image_size=(64, 64), batch_size=32
+)
+ds_train = ds_train.map(lambda x: x / 255.0)
 
 
 def resize_image(res, image):
@@ -64,8 +50,34 @@ def resize_image(res, image):
     return image
 
 
-def log2(x):
-    return int(np.log2(x))
+def create_dataloader(res):
+    batch_size = batch_sizes[log2(res)]
+    # NOTE: we unbatch the dataset so we can `batch()` it again with the `drop_remainder=True` option
+    # since the model only supports a single batch size
+    dl = ds_train.map(partial(resize_image, res), num_parallel_calls=tf.data.AUTOTUNE).unbatch()
+    dl = dl.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
+    return dl
+
+
+def plot_images(images, log2_res, fname=""):
+    scales = {2: 0.5, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
+    scale = scales[log2_res]
+
+    grid_col = min(images.shape[0], int(32 // scale))
+    grid_row = 1
+
+    f, axarr = plt.subplots(
+        grid_row, grid_col, figsize=(grid_col * scale, grid_row * scale)
+    )
+
+    for row in range(grid_row):
+        ax = axarr if grid_row == 1 else axarr[row]
+        for col in range(grid_col):
+            ax[col].imshow(images[row * grid_col + col])
+            ax[col].axis("off")
+    plt.show()
+    if fname:
+        f.savefig(fname)
 
 
 def fade_in(alpha, a, b):
@@ -228,6 +240,8 @@ class Generator:
 
         start_res = 2 ** start_res_log2
         self.input_shape = (start_res, start_res, self.filter_nums[start_res_log2])
+        
+        # Change this to be a proper shape for our input grayscale image
         self.g_input = layers.Input(self.input_shape, name="generator_input")
 
         for i in range(start_res_log2, target_res_log2 + 1):
@@ -256,7 +270,7 @@ class Generator:
 
     def build_block(self, filter_num, res, input_shape, is_base):
         input_tensor = layers.Input(shape=input_shape, name=f"g_{res}")
-        # noise = layers.Input(shape=(res, res, 1), name=f"noise_{res}")
+        noise = layers.Input(shape=(res, res, 1), name=f"noise_{res}")
         w = layers.Input(shape=512)
         x = input_tensor
 
@@ -264,6 +278,7 @@ class Generator:
             x = layers.UpSampling2D((2, 2))(x)
             x = EqualizedConv(filter_num, 3)(x)
 
+        # Don't need noise for our model
         # x = AddNoise()([x, noise])
         x = layers.LeakyReLU(0.2)(x)
         x = InstanceNormalization()(x)
@@ -274,7 +289,7 @@ class Generator:
         x = layers.LeakyReLU(0.2)(x)
         x = InstanceNormalization()(x)
         x = AdaIN()([x, w])
-        return keras.Model([input_tensor, w], x, name=f"genblock_{res}x{res}")
+        return keras.Model([input_tensor, w, noise], x, name=f"genblock_{res}x{res}")
 
     def grow(self, res_log2):
         res = 2 ** res_log2
@@ -309,10 +324,101 @@ class Generator:
         )
 
 
+class Discriminator:
+    def __init__(self, start_res_log2, target_res_log2):
+        self.start_res_log2 = start_res_log2
+        self.target_res_log2 = target_res_log2
+        self.num_stages = target_res_log2 - start_res_log2 + 1
+        # filter size to use at each stage, keys are log2(resolution)
+        self.filter_nums = {
+            0: 512,
+            1: 512,
+            2: 512,  # 4x4
+            3: 512,  # 8x8
+            4: 512,  # 16x16
+            5: 512,  # 32x32
+            6: 256,  # 64x64
+            7: 128,  # 128x128
+            8: 64,  # 256x256
+            9: 32,  # 512x512
+            10: 16,
+        }  # 1024x1024
+        # list of discriminator blocks at increasing resolution
+        self.d_blocks = []
+        # list of layers to convert RGB into activation for d_blocks inputs
+        self.from_rgb = []
+
+        for res_log2 in range(self.start_res_log2, self.target_res_log2 + 1):
+            res = 2 ** res_log2
+            filter_num = self.filter_nums[res_log2]
+            from_rgb = Sequential(
+                [
+                    layers.InputLayer(
+                        input_shape=(res, res, 3), name=f"from_rgb_input_{res}"
+                    ),
+                    EqualizedConv(filter_num, 1),
+                    layers.LeakyReLU(0.2),
+                ],
+                name=f"from_rgb_{res}",
+            )
+
+            self.from_rgb.append(from_rgb)
+
+            input_shape = (res, res, filter_num)
+            if len(self.d_blocks) == 0:
+                d_block = self.build_base(filter_num, res)
+            else:
+                d_block = self.build_block(
+                    filter_num, self.filter_nums[res_log2 - 1], res
+                )
+
+            self.d_blocks.append(d_block)
+
+    def build_base(self, filter_num, res):
+        input_tensor = layers.Input(shape=(res, res, filter_num), name=f"d_{res}")
+        x = minibatch_std(input_tensor)
+        x = EqualizedConv(filter_num, 3)(x)
+        x = layers.LeakyReLU(0.2)(x)
+        x = layers.Flatten()(x)
+        x = EqualizedDense(filter_num)(x)
+        x = layers.LeakyReLU(0.2)(x)
+        x = EqualizedDense(1)(x)
+        return keras.Model(input_tensor, x, name=f"d_{res}")
+
+    def build_block(self, filter_num_1, filter_num_2, res):
+        input_tensor = layers.Input(shape=(res, res, filter_num_1), name=f"d_{res}")
+        x = EqualizedConv(filter_num_1, 3)(input_tensor)
+        x = layers.LeakyReLU(0.2)(x)
+        x = EqualizedConv(filter_num_2)(x)
+        x = layers.LeakyReLU(0.2)(x)
+        x = layers.AveragePooling2D((2, 2))(x)
+        return keras.Model(input_tensor, x, name=f"d_{res}")
+
+    def grow(self, res_log2):
+        res = 2 ** res_log2
+        idx = res_log2 - self.start_res_log2
+        alpha = layers.Input(shape=(1), name="d_alpha")
+
+        input_image = layers.Input(shape=(res, res, 3), name="input_image")
+        x = self.from_rgb[idx](input_image)
+        x = self.d_blocks[idx](x)
+        if idx > 0:
+            idx -= 1
+            downsized_image = layers.AveragePooling2D((2, 2))(input_image)
+            y = self.from_rgb[idx](downsized_image)
+            x = fade_in(alpha[0], x, y)
+
+            for i in range(idx, -1, -1):
+                x = self.d_blocks[i](x)
+        return keras.Model([input_image, alpha], x, name=f"discriminator_{res}_x_{res}")
+
+
 class StyleGAN(tf.keras.Model):
     def __init__(self, z_dim=512, target_res=64, start_res=4):
         super(StyleGAN, self).__init__()
         self.z_dim = z_dim
+
+        # Add an input layer
 
         self.target_res_log2 = log2(target_res)
         self.start_res_log2 = log2(start_res)
@@ -322,6 +428,7 @@ class StyleGAN(tf.keras.Model):
         self.alpha = tf.Variable(1.0, dtype=tf.float32, trainable=False, name="alpha")
 
         self.mapping = Mapping(num_stages=self.num_stages)
+        self.d_builder = Discriminator(self.start_res_log2, self.target_res_log2)
         self.g_builder = Generator(self.start_res_log2, self.target_res_log2)
         self.g_input_shape = self.g_builder.input_shape
 
@@ -334,23 +441,23 @@ class StyleGAN(tf.keras.Model):
         tf.keras.backend.clear_session()
         res_log2 = log2(res)
         self.generator = self.g_builder.grow(res_log2)
-        # self.discriminator = self.d_builder.grow(res_log2)
+        self.discriminator = self.d_builder.grow(res_log2)
         self.current_res_log2 = res_log2
         print(f"\nModel resolution:{res}x{res}")
 
     def compile(
-        self, steps_per_epoch, phase, res, g_optimizer, *args, **kwargs
+        self, steps_per_epoch, phase, res, d_optimizer, g_optimizer, *args, **kwargs
     ):
         self.loss_weights = kwargs.pop("loss_weights", self.loss_weights)
         self.steps_per_epoch = steps_per_epoch
         if res != 2 ** self.current_res_log2:
             self.grow_model(res)
-            # self.d_optimizer = d_optimizer
+            self.d_optimizer = d_optimizer
             self.g_optimizer = g_optimizer
 
         self.train_step_counter.assign(0)
         self.phase = phase
-        # self.d_loss_metric = keras.metrics.Mean(name="d_loss")
+        self.d_loss_metric = keras.metrics.Mean(name="d_loss")
         self.g_loss_metric = keras.metrics.Mean(name="g_loss")
         super(StyleGAN, self).compile(*args, **kwargs)
 
@@ -372,7 +479,7 @@ class StyleGAN(tf.keras.Model):
         loss = tf.reduce_mean(tf.square(loss - 1))
         return loss
 
-    def train_step(self, grayscale, real_images):
+    def train_step(self, real_images):
 
         self.train_step_counter.assign_add(1)
 
@@ -390,19 +497,17 @@ class StyleGAN(tf.keras.Model):
         fake_labels = -tf.ones(batch_size)
 
         z = tf.random.normal((batch_size, self.z_dim))
-        # const_input = tf.ones(tuple([batch_size] + list(self.g_input_shape)))
+
+        # Make this a grayscale image 
+        const_input = tf.ones(tuple([batch_size] + list(self.g_input_shape)))
         noise = self.generate_noise(batch_size)
 
         # generator
         with tf.GradientTape() as g_tape:
             w = self.mapping(z)
-            
-            # CONVERT IMAGE TO LAB, GET LUMINENCE FROM INPUT IMAGE AND PUT FOR FAKE IMAGE, CONVERT BACK TO RGB
-            pred_image = self.generator([grayscale, w, noise, alpha])
-            pred_image = use_l_from_input(pred_image, grayscale)
-            g_loss = tf.keras.metrics.mean_squared_error(pred_image, real_images)
-            # pred_fake = self.discriminator([pred_image, alpha])
-            # g_loss = wasserstein_loss(real_labels, pred_fake)
+            fake_images = self.generator([const_input, w, noise, alpha])
+            pred_fake = self.discriminator([fake_images, alpha])
+            g_loss = wasserstein_loss(real_labels, pred_fake)
 
             trainable_weights = (
                 self.mapping.trainable_weights + self.generator.trainable_weights
@@ -410,11 +515,46 @@ class StyleGAN(tf.keras.Model):
             gradients = g_tape.gradient(g_loss, trainable_weights)
             self.g_optimizer.apply_gradients(zip(gradients, trainable_weights))
 
+        # discriminator
+        with tf.GradientTape() as gradient_tape, tf.GradientTape() as total_tape:
+            # forward pass
+            pred_fake = self.discriminator([fake_images, alpha])
+            pred_real = self.discriminator([real_images, alpha])
+
+            epsilon = tf.random.uniform((batch_size, 1, 1, 1))
+            interpolates = epsilon * real_images + (1 - epsilon) * fake_images
+            gradient_tape.watch(interpolates)
+            pred_fake_grad = self.discriminator([interpolates, alpha])
+
+            # calculate losses
+            loss_fake = wasserstein_loss(fake_labels, pred_fake)
+            loss_real = wasserstein_loss(real_labels, pred_real)
+            loss_fake_grad = wasserstein_loss(fake_labels, pred_fake_grad)
+
+            # gradient penalty
+            gradients_fake = gradient_tape.gradient(loss_fake_grad, [interpolates])
+            gradient_penalty = self.loss_weights[
+                "gradient_penalty"
+            ] * self.gradient_loss(gradients_fake)
+
+            # drift loss
+            all_pred = tf.concat([pred_fake, pred_real], axis=0)
+            drift_loss = self.loss_weights["drift"] * tf.reduce_mean(all_pred ** 2)
+
+            d_loss = loss_fake + loss_real + gradient_penalty + drift_loss
+
+            gradients = total_tape.gradient(
+                d_loss, self.discriminator.trainable_weights
+            )
+            self.d_optimizer.apply_gradients(
+                zip(gradients, self.discriminator.trainable_weights)
+            )
+
         # Update metrics
-        # self.d_loss_metric.update_state(d_loss)
+        self.d_loss_metric.update_state(d_loss)
         self.g_loss_metric.update_state(g_loss)
         return {
-            # "d_loss": self.d_loss_metric.result(),
+            "d_loss": self.d_loss_metric.result(),
             "g_loss": self.g_loss_metric.result(),
         }
 
@@ -442,15 +582,18 @@ class StyleGAN(tf.keras.Model):
         return images
 
 
-def use_l_from_input(pred, luminance):
-    L = 116 * (luminance / 255) ** (1/3) - 16
-    lab = color.rgb2lab(pred)
-    lab[:, :, 0] = L
-    pred = color.lab2rgb(lab)
-    return pred
+START_RES = 4
+TARGET_RES = 128
+
+style_gan = StyleGAN(start_res=START_RES, target_res=TARGET_RES)
 
 
-def train(style_gan, start_res=4,target_res=128, steps_per_epoch=5000, display_images=True):
+def train(
+    start_res=START_RES,
+    target_res=TARGET_RES,
+    steps_per_epoch=5000,
+    display_images=True,
+):
     opt_cfg = {"learning_rate": 1e-3, "beta_1": 0.0, "beta_2": 0.99, "epsilon": 1e-8}
 
     val_batch_size = 16
@@ -466,14 +609,12 @@ def train(style_gan, start_res=4,target_res=128, steps_per_epoch=5000, display_i
             if res == start_res and phase == "TRANSITION":
                 continue
 
-            # train_dl = create_dataloader(res)
-            batch_size = batch_sizes[log2(res)]
-            train_dl = ds_train.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
-            label_dl = ds_label.shuffle(200).batch(batch_size, drop_remainder=True).prefetch(1).repeat()
+            train_dl = create_dataloader(res)
 
             steps = int(train_step_ratio[res_log2] * steps_per_epoch)
 
             style_gan.compile(
+                d_optimizer=tf.keras.optimizers.Adam(**opt_cfg),
                 g_optimizer=tf.keras.optimizers.Adam(**opt_cfg),
                 loss_weights={"gradient_penalty": 10, "drift": 0.001},
                 steps_per_epoch=steps,
@@ -491,18 +632,34 @@ def train(style_gan, start_res=4,target_res=128, steps_per_epoch=5000, display_i
             )
             print(phase)
             style_gan.fit(
-                train_dl, label_dl, epochs=1, batch_size=batch_size, callbacks=[ckpt_cb]
+                train_dl, epochs=1, steps_per_epoch=steps, callbacks=[ckpt_cb]
             )
 
-
-def main():
-    START_RES = 8
-    TARGET_RES = 16
-
-    style_gan = StyleGAN(start_res=START_RES, target_res=TARGET_RES)
-    train(style_gan, start_res=4, target_res=16, steps_per_epoch=1, display_images=False)
+            if display_images:
+                images = style_gan({"z": val_z, "noise": val_noise, "alpha": 1.0})
+                plot_images(images, res_log2)
 
 
-if __name__ == "__main__":
-    print()
-    main()
+train(start_res=4, target_res=16, steps_per_epoch=1, display_images=False)
+
+
+# url = "https://github.com/soon-yau/stylegan_keras/releases/download/keras_example_v1.0/stylegan_128x128.ckpt.zip"
+
+# weights_path = keras.utils.get_file(
+#     "stylegan_128x128.ckpt.zip",
+#     url,
+#     extract=True,
+#     cache_dir=os.path.abspath("."),
+#     cache_subdir="pretrained",
+# )
+
+# style_gan.grow_model(128)
+# style_gan.load_weights(os.path.join("pretrained/stylegan_128x128.ckpt"))
+
+# tf.random.set_seed(196)
+# batch_size = 2
+# z = tf.random.normal((batch_size, style_gan.z_dim))
+# w = style_gan.mapping(z)
+# noise = style_gan.generate_noise(batch_size=batch_size)
+# images = style_gan({"style_code": w, "noise": noise, "alpha": 1.0})
+# plot_images(images, 5)
