@@ -25,14 +25,16 @@ def main():
 
 def get_embeddings(model, tok):
     record = []
-    for i in range(3):
+    file_idx = 0
+    last_idx = 150_000
+    for i in range(last_idx):
         # Get paths to image and caption
         path_to_file = f"./laion/captions/caption{i}.txt"
         path_to_img = f"./laion/images/img{i}.jpeg"
         file_exists = exists(path_to_file)
         rgb_exists = exists(path_to_img)
         if not file_exists or not rgb_exists:
-            print("Image doesnt exist")
+            logging.info(f"Image doesnt exist for index {i}")
             continue
         with open(path_to_file) as f:
             lines = f.readlines()
@@ -61,15 +63,17 @@ def get_embeddings(model, tok):
         logging.info(f"Creating TFRecord for object: {i}") 
         
         # Write to tfrecords file in batches
-        if i == 2:
+        if (i % 20_000 == 0 and i != 0) or (i == last_idx - 1):
+            logging.info(f"Writing {len(record)} records to tfrecords file...")
             # Write to tfrecords file 
-            record_file = 'images.tfrecords'
+            record_file = f'./tfrecords/laion{file_idx}.tfrecords'
             with tf.io.TFRecordWriter(record_file) as writer:
-                for i in range(3):
-                    tf_example = record[i]
+                for j in range(len(record)):
+                    tf_example = record[j]
                     writer.write(tf_example.SerializeToString())
             # Reset record
             record = []
+            file_idx+=1
 
 
 if __name__ == "__main__":
