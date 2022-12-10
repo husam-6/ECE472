@@ -23,6 +23,25 @@ import tfrecord
 import logging
 
 
+def count_tfrecord_examples(
+        tfrecords_dir: str,
+) -> int:
+    """
+    Counts the total number of examples in a collection of TFRecord files.
+
+    :param tfrecords_dir: directory that is assumed to contain only TFRecord files
+    :return: the total number of examples in the collection of TFRecord files
+        found in the specified directory
+    """
+
+    count = 0
+    for file_name in os.listdir(tfrecords_dir):
+        tfrecord_path = os.path.join(tfrecords_dir, file_name)
+        count += sum(1 for _ in tf.data.TFRecordDataset(tfrecord_path, compression_type="GZIP"))
+
+    return count
+
+
 def pixel_norm(x, epsilon=1e-8):
     return x / tf.math.sqrt(tf.reduce_mean(x ** 2, axis=-1, keepdims=True) + epsilon)
 
@@ -122,7 +141,7 @@ class EqualizedDense(layers.Layer):
         return output * self.learning_rate_multiplier
 
 
-def model_block(filter_num, input_shape, is_base=True, output=True):
+def model_block(filter_num, input_shape, is_base=True, output=True, blocks=5):
     """ Generator / model block
     
     This function takes in an input and creates a block of our StyleGAN generator block like 
@@ -140,14 +159,17 @@ def model_block(filter_num, input_shape, is_base=True, output=True):
     # Don't need noise for our model
     # x = tf.keras.layers.Conv2D(3, (3, 3), activation='relu')(x)
     x = EqualizedConv(3, 3)(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = InstanceNormalization()(x)
-    x = AdaIN()([x, w_embedding])
+    for _ in range(blocks):
+        x = layers.LeakyReLU(0.2)(x)
+        x = InstanceNormalization()(x)
+        x = AdaIN()([x, w_embedding])
 
-    x = EqualizedConv(filter_num, 3)(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = InstanceNormalization()(x)
-    x = AdaIN()([x, w_embedding])
+        x = EqualizedConv(filter_num, 3)(x)
+        x = layers.LeakyReLU(0.2)(x)
+        x = InstanceNormalization()(x)
+        x = AdaIN()([x, w_embedding])
+
+        filter_num *= 2
 
     if output:
         # Get only 2 dimensions (for ab channels)
@@ -172,14 +194,14 @@ def train(dataset, model, map_layer, epochs):
     # loss func
     loss_fn = keras.losses.MeanSquaredError()
 
+    # Get total number of samples
+    c = count_tfrecord_examples("./tfrecords")
+    saved_loss=[]
     # Train the model
-    # cardinality = np.sum([1 for _, _, _ in dataset])
-    cardinality = dataset.cardinality().numpy()
-    saved_loss = []
     for i in range(epochs):
         logging.info(f"Epoch {i} / {epochs - 1}")
         # Get batches from dataset
-        bar = tqdm(dataset, total=cardinality)
+        bar = tqdm(dataset, total = c // tfrecord.BATCH_SIZE)
         j = 0
         for gray_batch, embedding_batch, lab_batch in bar:
             with tf.GradientTape() as g_tape:
@@ -200,10 +222,9 @@ def train(dataset, model, map_layer, epochs):
                 optimizer.apply_gradients(zip(gradients, trainable_weights))
 
                 bar.set_description(f"Loss for batch {j} => {loss.numpy():0.3f}")
+                bar.refresh()
                 j+=1
                 saved_loss.append(loss.numpy())
-        bar.refresh()
-
         manager.save()
 
     # Save loss plot
@@ -226,7 +247,7 @@ def main():
 
     # Get models
     input_shape = (256, 256, 1)
-    model = model_block(32, input_shape=input_shape, is_base=True, output=True)
+    model = model_block(32, input_shape=input_shape, is_base=True, output=True, blocks=5)
     map_layer = Mapping(1, 1024)
     
     # Train
