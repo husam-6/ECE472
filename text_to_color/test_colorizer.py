@@ -60,18 +60,27 @@ def colorize(path_to_file, path_to_img, t5_enc, t5_tok):
     # Define the models to restore
     input_shape = (256, 256, 1)
     model = train_colorizer.model_block(32, input_shape=input_shape, is_base=True, output=True)
-    map_layer = train_colorizer.Mapping(1)
+    map_layer = train_colorizer.Mapping(1, 1024)
 
     # Restore the models from the checkpoint
-    ckpt.restore("./checkpoints/ckpt-5.data-00000-of-00001").mapped = {"model": model, "mapping": map_layer}
+    ckpt.mapped = {'model': model, "mapping": map_layer}
+    ckpt.restore(tf.train.latest_checkpoint("./checkpoints"))
 
     # Forward Prop to get final image
-    embedding_w = map_layer(tf.squeeze(tf.convert_to_tensor(fixed_emb)))
-    pred_ab = model([tf.reshape(tf.convert_to_tensor(gray), (-1, 256, 256, 1)), tf.squeeze(embedding_w)])
+    emb_tensor = tf.convert_to_tensor(fixed_emb)
+    emb_tensor = tf.reshape(emb_tensor, (1, 1024))
+    embedding_w = map_layer(emb_tensor)
+    embedding_w = tf.reshape(embedding_w, (1, 512))
+    inp = tf.reshape(tf.convert_to_tensor(gray, dtype=tf.float64), (-1, 256, 256, 1)) 
+    pred_ab = model([inp, embedding_w])
 
     # Add L channel from grayscale image to output
-    pred_ab = pred_ab.numpy()
-    lab_pred = np.dstack(np.resize(gray, (256, 256, 1)), pred_ab)
+    pred_ab = pred_ab.numpy().squeeze()
+    gray = color.gray2rgb(gray)
+    gray = color.rgb2lab(gray)
+    print(gray.shape)
+    print(pred_ab.shape)
+    lab_pred = np.dstack((gray[:, :, 0], pred_ab))
 
     return color.lab2rgb(lab_pred)
 

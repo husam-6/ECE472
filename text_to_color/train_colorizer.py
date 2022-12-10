@@ -177,6 +177,7 @@ def train(dataset, model, map_layer, epochs):
     for i in range(epochs):
         # Get batches from dataset
         bar = tqdm(dataset, total=cardinality)
+        j = 0
         for gray_batch, embedding_batch, lab_batch in bar:
             with tf.GradientTape() as g_tape:
                 
@@ -195,8 +196,9 @@ def train(dataset, model, map_layer, epochs):
                 gradients = g_tape.gradient(loss, trainable_weights)
                 optimizer.apply_gradients(zip(gradients, trainable_weights))
 
-                bar.set_description(f"Loss for batch {i} => {loss.numpy():0.3f}")
-                bar.refresh()
+                bar.set_description(f"Loss for batch {j} => {loss.numpy():0.3f}")
+                j+=1
+        bar.refresh()
 
         manager.save()
 
@@ -212,7 +214,7 @@ def main():
     # Get models
     input_shape = (256, 256, 1)
     model = model_block(32, input_shape=input_shape, is_base=True, output=True)
-    map_layer = Mapping(1)
+    map_layer = Mapping(1, 1024)
     
     # Train
     train(dataset, model, map_layer, 5)

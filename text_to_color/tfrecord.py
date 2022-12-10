@@ -74,7 +74,7 @@ def read_tfrecord(example):
     gray_raw = example["image_gray"]
     caption = example["caption_emb"]
 
-    caption = tf.io.decode_raw(caption, tf.float64)
+    caption = tf.io.decode_raw(caption, tf.float32)
 
     image = tf.io.decode_raw(image_raw, tf.int8)
     image = tf.reshape(image, LAB_IMAGE_SIZE)
@@ -168,13 +168,13 @@ def main():
     assert (image == labrgb).all()
     assert (caption == fixed_emb).all()
 
-# Read from TFRecords file
+# # Read from TFRecords file
 # raw_image_dataset = tf.data.TFRecordDataset('./tfrecords/laion0.tfrecords', compression_type="GZIP")
 
 # parsed_image_dataset = raw_image_dataset.map(_parse_image_function)
 # i = 0
 # for image_features in parsed_image_dataset:
-#     if i == 10:
+#     if i == 1:
 #         break
 #     i+=1
 #     image_raw = image_features["image_raw"].numpy()
@@ -192,7 +192,7 @@ def main():
 #     plt.imshow(color.lab2rgb(image), cmap="gray")
 #     plt.figure()
 #     plt.imshow(gray_i, cmap="gray")
-#     # print(caption)
+#     print(caption.shape)
 
 # %%
 # dataset = load_dataset(TRAINING_FILENAMES)
@@ -208,7 +208,7 @@ def show_batch(image_batch, label_batch, caption):
         # plt.figure()
         # plt.imshow(image_batch[n], cmap="gray")
 
-        # print(caption[n])
+        print(caption[n].shape)
 
 # iterator = iter(dataset)
 # for gray_batch, embedding_batch, lab_batch in dataset:
@@ -220,4 +220,4 @@ def show_batch(image_batch, label_batch, caption):
 # show_batch(gray_batch, lab_batch, embedding_batch)
 # plt.show()
 # if __name__ == "__main__":
-#     main()
+    # main()
