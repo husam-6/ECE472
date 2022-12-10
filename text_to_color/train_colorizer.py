@@ -158,7 +158,7 @@ def model_block(filter_num, input_shape, is_base=True, output=True):
 
 def train(dataset, model, map_layer, epochs):
     """ Function to train custom StyleGAN-like Architecture"""
-    
+    logging.info(f"Training on {epochs} epochs") 
     # Set up Checkpoint Variables
     checkpoint_dir = "./checkpoints/"
 
@@ -173,8 +173,11 @@ def train(dataset, model, map_layer, epochs):
     loss_fn = keras.losses.MeanSquaredError()
 
     # Train the model
-    cardinality = np.sum([1 for _, _, _ in dataset])
+    # cardinality = np.sum([1 for _, _, _ in dataset])
+    cardinality = dataset.cardinality().numpy()
+    saved_loss = []
     for i in range(epochs):
+        logging.info(f"Epoch {i} / {epochs - 1}")
         # Get batches from dataset
         bar = tqdm(dataset, total=cardinality)
         j = 0
@@ -198,9 +201,19 @@ def train(dataset, model, map_layer, epochs):
 
                 bar.set_description(f"Loss for batch {j} => {loss.numpy():0.3f}")
                 j+=1
+                saved_loss.append(loss.numpy())
         bar.refresh()
 
         manager.save()
+
+    # Save loss plot
+    plt.figure()
+    loss = np.array(loss)
+    plt.plot(loss)
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss (MSE)")
+    plt.title("Loss per batched iteration")
+    plt.savefig("loss.pdf")
 
 
 def main():

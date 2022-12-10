@@ -89,16 +89,18 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     # Remember to change to t5-3b when running on Kahan (those were the embeddings used in training)
-    model = T5Model.from_pretrained("t5-large")
-    tok = T5Tokenizer.from_pretrained("t5-large")
+    model = T5Model.from_pretrained("t5-3b")
+    tok = T5Tokenizer.from_pretrained("t5-3b")
     
-    path_to_file = f"./test/caption1.txt"
-    path_to_img = f"./test/img1.jpeg"
+    path_to_file = f"./test/firetruck.txt"
+    path_to_img = f"./test/firetruck.jpeg"
 
     img = colorize(path_to_file, path_to_img, model, tok)
     plt.figure()
     plt.imshow(img, cmap="gray")
-    plt.show()
+    plt.savefig("test_image.pdf")
+    # plt.show()
+
     
 
 
