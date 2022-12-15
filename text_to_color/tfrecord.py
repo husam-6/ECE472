@@ -3,7 +3,7 @@
 
 # %% libraries
 
-from transformers import T5Model, T5Tokenizer 
+# from transformers import T5Model, T5Tokenizer 
 import numpy as np
 from os.path import exists
 import logging
@@ -15,7 +15,7 @@ import tensorflow as tf
 from functools import partial
 
 AUTOTUNE = tf.data.AUTOTUNE
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 GRAY_IMAGE_SIZE = (256, 256)
 LAB_IMAGE_SIZE = (256, 256, 3)
 FILENAMES = tf.io.gfile.glob("./tfrecords/laion*.tfrecords")
@@ -122,20 +122,20 @@ def main():
     gray = color.rgb2gray(rgb)
     labrgb = color.rgb2lab(rgb)
 
-    model = T5Model.from_pretrained("t5-small")
-    tok = T5Tokenizer.from_pretrained("t5-small")
+    # model = T5Model.from_pretrained("t5-small")
+    # tok = T5Tokenizer.from_pretrained("t5-small")
 
-    enc = tok(lines, max_length=1024, truncation=True, return_tensors="pt")
+    # enc = tok(lines, max_length=1024, truncation=True, return_tensors="pt")
 
-    output = model.encoder(
-                input_ids=enc["input_ids"], 
-                attention_mask=enc["attention_mask"], 
-                return_dict=True)
+    # output = model.encoder(
+    #            input_ids=enc["input_ids"], 
+    #            attention_mask=enc["attention_mask"], 
+    #            return_dict=True)
 
     # get the final hidden states
-    emb = output.last_hidden_state.detach().numpy().squeeze()
-    fixed_emb = emb.mean(axis=0)
-
+    # emb = output.last_hidden_state.detach().numpy().squeeze()
+    # fixed_emb = emb.mean(axis=0)
+    fixed_emb = [1, 2, 3]
     # Write to tfrecords file 
     record_file = 'images.tfrecords'
     with tf.io.TFRecordWriter(record_file) as writer:

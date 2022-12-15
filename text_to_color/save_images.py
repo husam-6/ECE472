@@ -62,7 +62,7 @@ def load_image(url, text, i):
     # Read bytes from url (if possible)
     try:
         img = Image.open(BytesIO(res.content)).convert("RGB")
-        img.save(f"./images/img{i}.jpeg")
+        img.save(f"./laion/images/img{i}.jpeg")
     except PIL.UnidentifiedImageError:
         logging.info(f"Could not read bytes from url {url}")
         return None
@@ -85,10 +85,10 @@ def load_image(url, text, i):
 
     # Save Grayscale
     gray = Image.fromarray(gray).convert("RGB")
-    gray.save(f"./gray_images/gray{i}.jpeg")
+    gray.save(f"./laion/gray_images/gray{i}.jpeg")
     
     # Save caption
-    with open(f'./captions/caption{i}.txt', 'wb') as f:
+    with open(f'./laion/captions/caption{i}.txt', 'wb') as f:
         f.write(text.encode())
 
     return img_arr
@@ -98,7 +98,7 @@ def main():
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     df = pd.read_parquet("part1.parquet")
-    restart = 61615 
+    restart = 150_001 
     df = df.iloc[restart:]
 
     # captions = df["TEXT"].to_frame()
@@ -113,7 +113,7 @@ def main():
     
     # Loop through dataset, download images, save grayscale and captions
     for i, row in df.iterrows():
-        if i == 150_001:
+        if i == 150_101:
             break
 
         # Download image

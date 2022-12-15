@@ -4,6 +4,7 @@ DL Final Project
 """
 
 import os
+import argparse
 import random
 import math
 import numpy as np
@@ -23,23 +24,11 @@ import tfrecord
 import logging
 
 
-def count_tfrecord_examples(
-        tfrecords_dir: str,
-) -> int:
-    """
-    Counts the total number of examples in a collection of TFRecord files.
-
-    :param tfrecords_dir: directory that is assumed to contain only TFRecord files
-    :return: the total number of examples in the collection of TFRecord files
-        found in the specified directory
-    """
-
-    count = 0
-    for file_name in os.listdir(tfrecords_dir):
-        tfrecord_path = os.path.join(tfrecords_dir, file_name)
-        count += sum(1 for _ in tf.data.TFRecordDataset(tfrecord_path, compression_type="GZIP"))
-
-    return count
+# Command line flags
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_epochs", default=5, help="Number of epochs")
+parser.add_argument("--learning_rate", default=0.001, help="Learning Rate")
+parser.add_argument("--batch_size", default=32, help="Batch Size")
 
 
 def pixel_norm(x, epsilon=1e-8):
@@ -79,12 +68,13 @@ class AdaIN(layers.Layer):
 
 
 class EqualizedConv(layers.Layer):
-    def __init__(self, out_channels, kernel=3, gain=2, **kwargs):
+    def __init__(self, out_channels, kernel=3, gain=2, strides=1, **kwargs):
         super(EqualizedConv, self).__init__(**kwargs)
         self.kernel = kernel
         self.out_channels = out_channels
         self.gain = gain
         self.pad = kernel != 1
+        self.strides = strides
 
     def build(self, input_shape):
         self.in_channels = input_shape[-1]
@@ -106,8 +96,9 @@ class EqualizedConv(layers.Layer):
             x = tf.pad(inputs, [[0, 0], [1, 1], [1, 1], [0, 0]], mode="REFLECT")
         else:
             x = inputs
+
         output = (
-            tf.nn.conv2d(x, self.scale * self.w, strides=1, padding="VALID") + self.b
+            tf.nn.conv2d(x, self.scale * self.w, strides=self.strides, padding="VALID") + self.b
         )
         return output
 
@@ -141,6 +132,18 @@ class EqualizedDense(layers.Layer):
         return output * self.learning_rate_multiplier
 
 
+def block(x, w_embedding, filter_num):
+        x = layers.LeakyReLU(0.2)(x)
+        x = InstanceNormalization()(x)
+        x = AdaIN()([x, w_embedding])
+
+        x = EqualizedConv(filter_num, 3)(x)
+        x = layers.LeakyReLU(0.2)(x)
+        x = InstanceNormalization()(x)
+        x = AdaIN()([x, w_embedding])
+        return x
+
+
 def model_block(filter_num, input_shape, is_base=True, output=True, blocks=5):
     """ Generator / model block
     
@@ -152,25 +155,52 @@ def model_block(filter_num, input_shape, is_base=True, output=True, blocks=5):
     w_embedding = layers.Input(shape=512)
     x = input_tensor
 
-    if not is_base:
-        x = layers.UpSampling2D((2, 2))(x)
-        x = EqualizedConv(filter_num, 3)(x)
-
     # Don't need noise for our model
     # x = tf.keras.layers.Conv2D(3, (3, 3), activation='relu')(x)
     x = EqualizedConv(3, 3)(x)
-    for _ in range(blocks):
-        x = layers.LeakyReLU(0.2)(x)
-        x = InstanceNormalization()(x)
-        x = AdaIN()([x, w_embedding])
 
-        x = EqualizedConv(filter_num, 3)(x)
-        x = layers.LeakyReLU(0.2)(x)
-        x = InstanceNormalization()(x)
-        x = AdaIN()([x, w_embedding])
+    # Conv1 block
+    x = EqualizedConv(filter_num, 3, strides=2)(x)
+    x = block(x, w_embedding, filter_num)
+        
+    # Conv2 
+    x = EqualizedConv(filter_num * 4, 3, strides=2)(x)
+    x = block(x, w_embedding, filter_num * 4)
 
-        filter_num *= 2
+    # Conv3 
+    x = EqualizedConv(filter_num * 4, 3, strides=2)(x)
+    x = block(x, w_embedding, filter_num * 4)
+    
+    # Conv4
+    x = EqualizedConv(filter_num * 4, 3, strides=2)(x)
+    x = block(x, w_embedding, filter_num * 8)
 
+    # Conv5
+    x = block(x, w_embedding, filter_num * 8)
+    
+    # Conv6
+    x = block(x, w_embedding, filter_num * 8)
+    
+    # Conv7 block 
+    x = layers.UpSampling2D((2,2))(x)
+    x = EqualizedConv(filter_num * 4, 3)(x)
+    x = block(x, w_embedding, filter_num * 4)
+
+    # Conv8 block 
+    x = layers.UpSampling2D((2,2))(x)
+    x = EqualizedConv(filter_num * 4, 3)(x)
+    x = block(x, w_embedding, filter_num * 4)
+
+    # Conv9 block 
+    x = layers.UpSampling2D((2,2))(x)
+    x = EqualizedConv(filter_num * 2, 3)(x)
+    x = block(x, w_embedding, filter_num * 2)
+
+    # Conv10 block 
+    x = layers.UpSampling2D((2,2))(x)
+    x = EqualizedConv(filter_num, 3)(x)
+    x = block(x, w_embedding, filter_num)
+    
     if output:
         # Get only 2 dimensions (for ab channels)
         x = EqualizedConv(2, 3)(x)
@@ -178,14 +208,14 @@ def model_block(filter_num, input_shape, is_base=True, output=True, blocks=5):
     return keras.Model([input_tensor, w_embedding], x)
 
 
-def train(dataset, model, map_layer, epochs):
+def train(dataset, validation, model, map_layer, epochs, learning_rate, batch_size):
     """ Function to train custom StyleGAN-like Architecture"""
     logging.info(f"Training on {epochs} epochs") 
     # Set up Checkpoint Variables
-    checkpoint_dir = "./checkpoints/"
+    checkpoint_dir = "./checkpoints_normalized_tests/"
 
-    optimizer = tf.optimizers.Adam()
-    # optimizer = tf.optimizers.Adam(learning_rate=float(args.learning_rate))
+    # optimizer = tf.optimizers.Adam()
+    optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
     # Add the models to the checkpoint object
     checkpoint = tf.train.Checkpoint()
     checkpoint.mapped = {"model": model, "mapping": map_layer}
@@ -194,39 +224,61 @@ def train(dataset, model, map_layer, epochs):
     # loss func
     loss_fn = keras.losses.MeanSquaredError()
 
-    # Get total number of samples
-    c = count_tfrecord_examples("./tfrecords")
     saved_loss=[]
+    loss_epochs=[]
+    saved_val_loss=[]
     # Train the model
     for i in range(epochs):
-        logging.info(f"Epoch {i} / {epochs - 1}")
+        logging.info(f"Epoch {i + 1} / {epochs}")
         # Get batches from dataset
-        bar = tqdm(dataset, total = c // tfrecord.BATCH_SIZE)
         j = 0
-        for gray_batch, embedding_batch, lab_batch in bar:
+        bar = tqdm(dataset, total= 122_000 // batch_size)
+        for gray_batch, embedding_batch, lab_batch in dataset:
             with tf.GradientTape() as g_tape:
-                
                 # Project embeddings to latent dimension
                 embedding_w = map_layer(tf.squeeze(embedding_batch))
-
+            
                 # Forward Prop
                 pred_ab = model([tf.reshape(gray_batch, (-1, 256, 256, 1)), tf.squeeze(embedding_w)])
                 
                 # Calculate loss and backprop
-                loss = loss_fn(pred_ab, lab_batch[:, :, :, 1:])
+                # l2_reg = 0.00000001 * tf.reduce_mean([tf.nn.l2_loss(v) for v in model.trainable_variables ])
+                # l2_reg += 0.00000001 * tf.reduce_mean([tf.nn.l2_loss(v) for v in map_layer.trainable_variables ])
+                loss = loss_fn(pred_ab, lab_batch[:, :, :, 1:] / 128)
 
-                trainable_weights = (
-                    map_layer.trainable_weights + model.trainable_weights
-                )
-                gradients = g_tape.gradient(loss, trainable_weights)
-                optimizer.apply_gradients(zip(gradients, trainable_weights))
-
-                bar.set_description(f"Loss for batch {j} => {loss.numpy():0.3f}")
-                bar.refresh()
-                j+=1
-                saved_loss.append(loss.numpy())
+            trainable_weights = (
+                map_layer.trainable_weights + model.trainable_weights
+            )
+            gradients = g_tape.gradient(loss, trainable_weights)
+            optimizer.apply_gradients(zip(gradients, trainable_weights))
+                
+            saved_loss.append(loss.numpy())
+            # logging.info(f"Loss for batch {j}: {loss.numpy():0.3f}")
+            bar.set_description(f"Loss for batch {j} => {loss.numpy():0.5f}")
+            bar.update()
+            j+=1
         manager.save()
+        bar.close()
 
+        # Run a validation loop at the end of each epoch
+        # val_loss = 0
+        # N = 0
+        # for gray_batch, embedding_batch, lab_batch in validation:
+            # Project embeddings to latent dimension
+            # embedding_w = map_layer(tf.squeeze(embedding_batch))
+
+            # Forward Prop
+            # pred_ab = model([tf.reshape(gray_batch, (-1, 256, 256, 1)), tf.squeeze(embedding_w)])
+
+            # Calculate loss and backprop
+            # val_loss += loss_fn(pred_ab, lab_batch[:, :, :, 1:] / 128)
+            # N += 1
+        # logging.info(f"Validation Loss: {val_loss / N}")
+        # saved_val_loss.append(val_loss / N)
+        # saved_loss = np.array(saved_loss)
+        # loss_epochs.append(saved_loss.mean())
+        # saved_loss = []
+    
     # Save loss plot
     plt.figure()
     loss = np.array(loss)
@@ -238,20 +290,33 @@ def train(dataset, model, map_layer, epochs):
 
 
 def main():
+    # Set up logger
     logging.basicConfig(level=logging.INFO)
 
+    # Set up logger and arguments
+    args = parser.parse_args()
+
     # Get the pre-processed dataset
-    dataset = tfrecord.load_dataset(tfrecord.TRAINING_FILENAMES)
+    # split_ind = int(0.9 * len(tfrecord.FILENAMES))
+    # TRAINING_FILENAMES, VALID_FILENAMES = tfrecord.FILENAMES[:split_ind], tfrecord.FILENAMES[split_ind:]
+    # dataset = tfrecord.load_dataset(TRAINING_FILENAMES)
+    # validation = tfrecord.load_dataset(VALID_FILENAMES)
+    # FILENAMES = tf.io.gfile.glob("./single_batch/laion*.tfrecords")
+    dataset = tfrecord.load_dataset(tfrecord.FILENAMES)
     dataset = dataset.prefetch(buffer_size=tfrecord.AUTOTUNE)
-    dataset = dataset.batch(tfrecord.BATCH_SIZE)
+    dataset = dataset.batch(int(args.batch_size))
+    validation = None
+    # validation = validation.prefetch(buffer_size=tfrecord.AUTOTUNE)
+    # validation = validation.batch(int(args.batch_size))
 
     # Get models
     input_shape = (256, 256, 1)
-    model = model_block(32, input_shape=input_shape, is_base=True, output=True, blocks=5)
+    model = model_block(32, input_shape=input_shape, is_base=True, output=True, blocks=6)
     map_layer = Mapping(1, 1024)
     
     # Train
-    train(dataset, model, map_layer, 5)
+    train(dataset, validation, model, map_layer, 
+          int(args.num_epochs), float(args.learning_rate), int(args.batch_size))
 
 
 if __name__ == "__main__":
